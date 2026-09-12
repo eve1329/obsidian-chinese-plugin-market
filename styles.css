@@ -5935,3 +5935,51 @@ button.pt-card-install-btn--installed {
 	width: 100%;
 	text-align: left;
 }
+
+/* ── 搜索诊断（设置页）：展示最近一次搜索的分段计时 ──
+   与 pt-setting-full-width / pt-setting-control-full 配合使用。
+   进度条走原生 <progress>，避免动态宽度需要内联样式。 */
+.pt-timing-box {
+	width: 100%;
+	text-align: left;
+}
+.pt-timing-total {
+	font-weight: 600;
+}
+.pt-timing-sub,
+.pt-timing-counters,
+.pt-timing-empty {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+.pt-timing-hint {
+	margin-top: 8px;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+.pt-timing-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 4px;
+}
+.pt-timing-name {
+	flex: 0 0 8em;
+	font-size: var(--font-ui-smaller);
+}
+.pt-timing-ms {
+	flex: 0 0 5em;
+	font-size: var(--font-ui-smaller);
+	text-align: right;
+	color: var(--text-muted);
+}
+.pt-timing-row progress {
+	flex: 1 1 auto;
+	height: 6px;
+}
+.pt-timing-bar-llm {
+	opacity: 0.5;
+}
+.pt-timing-counters {
+	margin-top: 8px;
+}

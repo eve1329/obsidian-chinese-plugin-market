@@ -12,6 +12,7 @@ import { makeT, type I18nKey } from "@shared/i18n";
 import { normalizeBaseUrl, isLocalBaseUrl, isAISearchUsable } from "@shared/utils";
 import { BaiduTranslateClient } from "@translation/api/baidu";
 import { isWebGPUAvailable } from "@semantic/embedding";
+import { localPhaseMs, PHASE } from "@domain/search/search-timing";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 import { VIEW_TYPE } from "@shared/constants";
 import { logger } from "@shared/logger";
@@ -723,6 +724,18 @@ export class TranslatorSettingTab extends PluginSettingTab {
 					},
 				],
 			},
+			{
+				type: "group",
+				heading: this.t("settings.diagnostics"),
+				desc: this.t("settings.diagnostics.desc"),
+				items: [
+					{
+						// 左侧 label 留空：group 标题已说明用途，避免重复显示
+						name: "",
+						render: (setting) => this.renderSearchTiming(setting),
+					},
+				],
+			},
 		];
 	}
 
@@ -1019,5 +1032,68 @@ export class TranslatorSettingTab extends PluginSettingTab {
 				setting.descEl.setText(`${this.t("settings.embedding.index.idle")} · SQLite ${st.sqliteReady ? "✓" : "✗"}`);
 			}
 		}).catch(() => {});
+	}
+
+	/**
+	 * 渲染搜索耗时诊断：展示最近一次搜索的分段计时（数据来自 AISearcher 的埋点）。
+	 *
+	 * 设置页不随搜索自动刷新，故提供「刷新」按钮手动取最新快照。
+	 * 展示口径与自动告警一致：本地阶段合计（排除 LLM 网络耗时）——否则任何一次正常
+	 * 搜索都会因为 LLM 延迟而「看起来慢」。
+	 */
+	private renderSearchTiming(setting: Setting): void {
+		setting.settingEl.addClass("pt-setting-full-width");
+		if (setting.infoEl) setting.infoEl.addClass("pt-setting-info-hidden");
+		setting.controlEl.addClass("pt-setting-control-full");
+		setting.controlEl.empty();
+
+		const box = setting.controlEl.createDiv({ cls: "pt-timing-box" });
+
+		const render = () => {
+			box.empty();
+			const snap = this.plugin.translator.getLastSearchTiming();
+			if (!snap) {
+				box.createDiv({ cls: "pt-timing-empty", text: this.t("settings.diagnostics.empty") });
+				return;
+			}
+
+			box.createDiv({
+				cls: "pt-timing-total",
+				text: this.t("settings.diagnostics.total", { total: snap.totalMs.toFixed(1) }),
+			});
+			box.createDiv({
+				cls: "pt-timing-sub",
+				text: this.t("settings.diagnostics.local", { local: localPhaseMs(snap).toFixed(1) }),
+			});
+
+			// 各阶段：名称 + 毫秒 + 占比条。用 <progress> 而非内联宽度，遵循
+			// no-static-styles-assignment —— 动态宽度同样不走内联样式。
+			const maxMs = Math.max(1, ...snap.phases.map((p) => p.ms));
+			for (const p of snap.phases) {
+				const row = box.createDiv({ cls: "pt-timing-row" });
+				row.createSpan({ cls: "pt-timing-name", text: p.name });
+				row.createSpan({ cls: "pt-timing-ms", text: `${p.ms.toFixed(1)} ms` });
+				const bar = row.createEl("progress", {
+					cls: p.name === PHASE.llmRank ? "pt-timing-bar-llm" : "pt-timing-bar",
+				});
+				bar.max = maxMs;
+				bar.value = p.ms;
+			}
+
+			const counters = Object.entries(snap.counters);
+			if (counters.length > 0) {
+				box.createDiv({
+					cls: "pt-timing-counters",
+					text: counters.map(([k, v]) => `${k}=${v}`).join(" · "),
+				});
+			}
+
+			box.createDiv({ cls: "pt-timing-hint", text: this.t("settings.diagnostics.hint") });
+		};
+
+		setting.addButton((b) =>
+			b.setButtonText(this.t("settings.diagnostics.refresh")).onClick(() => render())
+		);
+		render();
 	}
 }

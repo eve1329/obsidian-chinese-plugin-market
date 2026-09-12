@@ -22,6 +22,7 @@ import { BaiduTranslateClient, type BaiduApiConfig } from "@translation/api/baid
 import { buildSelfHostedTranslators, type SelfHostedTranslator } from "@translation/api/self-hosted";
 import { TransmartClient } from "@translation/api/transmart";
 import { AISearcher } from "@domain/search/ai";
+import type { SearchTimingSnapshot } from "@domain/search/search-timing";
 import { CoverageTracker } from "@domain/catalog/coverage";
 import { PluginTagService, type PluginTag } from "@domain/catalog/plugin-tags";
 import { type TMEntry } from "@translation/memory/translation-memory";
@@ -1117,6 +1118,14 @@ export class Translator {
 	): Promise<AISearchResult> {
 		if (config) this.setAIConfig(config);
 		return this.aiSearcher.localSearch(query, allPlugins, filterCategories);
+	}
+
+	/**
+	 * 最近一次 AI / 本地语义搜索的分段计时快照（供设置页等诊断入口展示）。
+	 * 返回 null 表示本次会话尚未搜索过。快照是拷贝，调用方随意改动不影响内部状态。
+	 */
+	getLastSearchTiming(): SearchTimingSnapshot | null {
+		return this.aiSearcher.getLastSearchTiming();
 	}
 
 	/** AI 深度对比委托（带缓存：同一插件集合直接命中，避免重复烧 token） */

@@ -413,6 +413,13 @@ export const STRINGS = {
 	"settings.embedding.index.doneNotice": { zh: "✓ 本地向量索引构建完成（{p} 个插件），已可离线语义搜索。" },
 	"settings.embedding.index.error": { zh: "构建失败" },
 	"settings.embedding.index.errorNotice": { zh: "✗ 本地向量索引构建失败：" },
+	"settings.diagnostics": { zh: "搜索诊断" },
+	"settings.diagnostics.desc": { zh: "展示最近一次 AI / 本地语义搜索的耗时构成，用于判断慢在哪一步。" },
+	"settings.diagnostics.empty": { zh: "本次会话尚未执行过搜索。先在搜索框里搜一次，再回到这里查看。" },
+	"settings.diagnostics.refresh": { zh: "刷新" },
+	"settings.diagnostics.total": { zh: "总计 {total} ms" },
+	"settings.diagnostics.local": { zh: "本地阶段 {local} ms（仅本地计算：关键词召回 / 标题模糊 / RRF，不含 LLM 与 embedding 往返）" },
+	"settings.diagnostics.hint": { zh: "提示：「向量命中=0」通常说明索引没建好，而不是慢；「索引重建=1」说明这次搜索付了重建成本。本地阶段持续偏高时会自动在控制台告警。" },
 	"settings.embedding.mobileWarn": { zh: "移动端提示：本地模型需下载约 26MB WASM 运行时并加载模型权重，可能占用大量内存、拖慢 Obsidian，弱网下首次加载也较慢。推荐使用「关键词」或「API 向量」模式。" },
 	"settings.embedding.mobileLocalNotice": { zh: "移动端本地模型可能占用大量内存，如遇卡顿请切回关键词或 API。" },
 	// 翻译引擎
