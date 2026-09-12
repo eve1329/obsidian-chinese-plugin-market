@@ -194,6 +194,9 @@ export interface RecallCandidate {
 /**
  * 本地零依赖召回：从全量插件中粗筛出"字面相关"的候选，作为 LLM 精排的输入。
  *
+ * ⚠️ 已被取代：线上关键词召回现在是 ai.ts 的 BM25 倒排（bm25RecallScores），
+ * 本函数已无生产调用点，仅剩单测引用，保留作对照。
+ *
  * 设计动机（阶段 1 路线 B）：让 LLM 扫描全量插件库既昂贵又易触发 max_tokens 截断
  * （即用户遇到的 finish_reason=length）。改为「本地粗筛 → LLM 精排」两段式后，
  * LLM 只需处理数百条候选，稳定、快、省。
@@ -239,40 +242,6 @@ export function localRecall(
 
 	scored.sort((a, b) => b.score - a.score);
 	return scored.slice(0, cap).map((s) => s.c);
-}
-
-/**
- * 本地关键词召回（带分数版）：与 localRecall 同算法，但返回 `Map<插件id, 分数>`，
- * 供上层做 RRF 融合。无命中返回空 Map。
- */
-export function localRecallScores(
-	query: string,
-	allPlugins: RecallCandidate[],
-	cap: number
-): Map<string, number> {
-	const out = new Map<string, number>();
-	const q = query.toLowerCase().replace(/\s+/g, " ").trim();
-	const tokens = q.match(/[a-z0-9]+|[一-龥]/g) || [];
-	if (tokens.length === 0) return out;
-	for (const p of allPlugins) {
-		const name = (p.name || "").toLowerCase();
-		const desc = (p.description || "").toLowerCase();
-		let score = 0;
-		if (name.includes(q)) score += 3;
-		if (desc.includes(q)) score += 1;
-		for (const t of tokens) {
-			if (name.includes(t)) score += 2;
-			else if (desc.includes(t)) score += 1;
-		}
-		if (score > 0) out.set(p.id, score);
-	}
-	// 仅保留分数最高的前 cap 个（与 localRecall 一致），避免低分噪声进入融合
-	const top = Array.from(out.entries())
-		.sort((a, b) => b[1] - a[1])
-		.slice(0, cap);
-	out.clear();
-	for (const [id, s] of top) out.set(id, s);
-	return out;
 }
 
 // ──────────────────────────────────────────
@@ -338,8 +307,15 @@ export function jaroWinkler(a: string, b: string): number {
  * @param top 最多保留多少条
  * @param minScore 相似度下限（默认 0.55，比 vault-curate 的 0.7 更宽松以兜住短名）
  */
-/** 小写名缓存：插件 name 固定，避免每次模糊搜索对每插件重复 toLowerCase（O(N) 字符串分配） */
+/**
+ * 小写名缓存：插件 name 固定，避免每次模糊搜索对每插件重复 toLowerCase（O(N) 字符串分配）。
+ *
+ * 有上界。键是「历史见过的所有插件名」——插件被下架/改名后旧名仍留在表里，
+ * 长会话下只增不减。上界刻意设得远高于任何真实插件规模（正常使用永不触发淘汰），
+ * 仅作为异常增长的兜底，避免无界占用内存。
+ */
 const lowerNameCache = new Map<string, string>();
+const LOWER_NAME_CACHE_MAX = 20000;
 
 export function fuzzyTitleScores(
 	query: string,
@@ -358,6 +334,11 @@ export function fuzzyTitleScores(
 		let title = lowerNameCache.get(raw);
 		if (title === undefined) {
 			title = raw.toLowerCase();
+			// 达上界时淘汰最早插入的一项（Map 迭代序 = 插入序），保证缓存不无界增长
+			if (lowerNameCache.size >= LOWER_NAME_CACHE_MAX) {
+				const oldest = lowerNameCache.keys().next().value;
+				if (oldest !== undefined) lowerNameCache.delete(oldest);
+			}
 			lowerNameCache.set(raw, title);
 		}
 		if (!title) continue;
@@ -546,6 +527,9 @@ export function contentHash(texts: string[]): string {
 
 /**
  * 混合召回合并：把向量召回与关键词召回的结果取【并集】。
+ *
+ * ⚠️ 已被取代：线上融合改用 RRF（rrfFuse + topNFused），它按名次融合而非简单并集，
+ * 对异构分数量纲更稳。本函数已无生产调用点，仅 recall.test.ts 引用，保留作对照。
  *
  * 目的（阶段 2.5 增强）：向量能命中字面无重叠的语义相关项（跨语言），
  * 关键词能补回向量漏掉的字面精确项。两者并集可显著提升召回率。
