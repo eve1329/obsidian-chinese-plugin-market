@@ -125,16 +125,21 @@ export class WorkerLocalBackend implements LocalModelBackend {
 	private async init(): Promise<void> {
 		if (this.initPromise) return this.initPromise;
 		if (this.worker) return;
-		this.initPromise = new Promise<void>((resolve, reject) => {
+		// 用局部引用而非直接读 this.initPromise：failInit() 内部会 dispose()，
+		// 而 dispose() 会把 this.initPromise 置空 —— 那样这里就返回 null，
+		// 被 reject 的 promise 没人接住，变成 unhandled rejection，且调用方拿到的是
+		// 「worker not ready」而非真正的失败原因（如模型加载失败）。
+		const promise = new Promise<void>((resolve, reject) => {
 			this.initResolve = resolve;
 			this.initReject = reject;
 		});
+		this.initPromise = promise;
 		try {
 			await this.bootWorker();
 		} catch (e: unknown) {
 			this.failInit(e instanceof Error ? e : new Error(String(e)));
 		}
-		return this.initPromise;
+		return promise;
 	}
 
 	private async bootWorker(): Promise<void> {
@@ -268,6 +273,13 @@ export class WorkerLocalBackend implements LocalModelBackend {
 		}
 		for (const p of this.pending.values()) p.reject(new Error("backend disposed"));
 		this.pending.clear();
+		// 清掉 init 超时定时器：否则在 init-error / worker.onerror 路径上，一个
+		// 240s 的定时器会存活到超时，届时又对已释放的实例调用 failInit
+		// （虽是无害的 no-op，但白白持有闭包与实例引用）。
+		if (this.initTimer !== null) {
+			window.clearTimeout(this.initTimer);
+			this.initTimer = null;
+		}
 		this.initPromise = null;
 		this.initResolve = null;
 		this.initReject = null;
