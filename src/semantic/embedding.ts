@@ -463,12 +463,27 @@ export async function vectorRecall(
 	return m ? Array.from(m.keys()) : [];
 }
 
-/** query embedding LRU 缓存（PERF-9）：key = provider名+模型+query，命中则跳过重复 embed。 */
+/** query embedding LRU 缓存（PERF-9）：命中则跳过重复 embed（省一次 API 往返/推理）。 */
 const QUERY_VEC_CACHE = new Map<string, number[]>();
 const QUERY_VEC_CACHE_MAX = 64;
 
-function getCachedQueryVec(provider: EmbeddingProvider, query: string): number[] | undefined {
-	const key = `${provider.name}|${query}`;
+/**
+ * query 向量缓存键。
+ *
+ * 必须同时含 provider 类型**和实际模型**：`EmbeddingProvider.name` 只有 "api"/"local"
+ * 两种取值，不含模型。若只用 name 作键，用户在同一 provider 类型下换模型
+ * （如 text-embedding-3-small → text-embedding-3-large，1536 → 3072 维）后会命中
+ * 旧模型的向量；而 topKBySimilarity 对维度不一致是「按较短维度截断」的静默行为，
+ * 不抛错、不告警，直接给出错误排序。
+ *
+ * 这里用 index.model（构建该索引时实际使用的模型 key）而非 provider 内部字段：
+ * 索引与 query 必须落在同一向量空间，以索引的模型为准是最直接的不变量。
+ */
+function queryVecCacheKey(provider: EmbeddingProvider, model: string, query: string): string {
+	return `${provider.name}|${model}|${query}`;
+}
+
+function getCachedQueryVec(key: string): number[] | undefined {
 	const hit = QUERY_VEC_CACHE.get(key);
 	if (hit) {
 		// LRU：命中后移到末尾（最近使用）
@@ -478,8 +493,7 @@ function getCachedQueryVec(provider: EmbeddingProvider, query: string): number[]
 	return hit;
 }
 
-function setCachedQueryVec(provider: EmbeddingProvider, query: string, vec: number[]): void {
-	const key = `${provider.name}|${query}`;
+function setCachedQueryVec(key: string, vec: number[]): void {
 	if (QUERY_VEC_CACHE.has(key)) QUERY_VEC_CACHE.delete(key);
 	QUERY_VEC_CACHE.set(key, vec);
 	// 超出容量：淘汰最久未用（Map 迭代序 = 插入序，首个即最旧）
@@ -507,12 +521,14 @@ export async function vectorRecallScores(
 ): Promise<Map<string, number> | null> {
 	if (!index.vectors.length) return null;
 	// query 同样转简体（与索引同空间）。PERF-9：命中缓存则跳过重复 embed（省一次 API 往返/推理）。
+	// 键含 index.model，保证换模型后不会复用旧模型的 query 向量（见 queryVecCacheKey）。
 	const t2sQuery = t2sForEmbed(query);
-	let queryVec = getCachedQueryVec(provider, t2sQuery);
+	const cacheKey = queryVecCacheKey(provider, index.model, t2sQuery);
+	let queryVec = getCachedQueryVec(cacheKey);
 	if (!queryVec) {
 		const [vec] = await provider.embed([t2sQuery]);
 		queryVec = vec;
-		if (queryVec && queryVec.length > 0) setCachedQueryVec(provider, t2sQuery, queryVec);
+		if (queryVec && queryVec.length > 0) setCachedQueryVec(cacheKey, queryVec);
 	}
 	if (!queryVec || queryVec.length === 0) return null;
 	const top = topKBySimilarity(queryVec, index.vectors, k, minScore);
