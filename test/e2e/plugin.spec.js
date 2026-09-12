@@ -60,3 +60,55 @@ test("命令回调可触发：打开视图命令不抛错", async ({ page }) => 
 	});
 	expect(ok).toBe(true);
 });
+
+test("设置页自定义 render 条目可渲染（含搜索诊断区空态）", async ({ page }) => {
+	const items = await page.evaluate(async () => {
+		await window.__e2ePlugin.startPlugin({});
+		return window.__e2ePlugin.renderSettingItems();
+	});
+
+	// 这些条目走的是自定义 render 回调（非声明式 control）：鸣谢 / 向量索引 /
+	// 自托管源 / 搜索诊断。此前 e2e 只统计 settingTabs 数量，从未执行过它们。
+	expect(items.length).toBeGreaterThanOrEqual(4);
+	expect(items.map((i) => i.group)).toContain("搜索诊断");
+
+	// 未搜索过 → 应渲染空态提示 + 刷新按钮，而不是抛错或留白
+	const diag = items.find((i) => i.group === "搜索诊断");
+	expect(diag).toBeTruthy();
+	expect(diag.html).toContain("尚未执行过搜索");
+	expect(diag.buttons).toContain("刷新");
+});
+
+test("搜索诊断区在有计时快照时渲染出分段、计数器与刷新按钮", async ({ page }) => {
+	const diag = await page.evaluate(async () => {
+		await window.__e2ePlugin.startPlugin({});
+		// 注入一份快照，避免 e2e 依赖真实搜索（真实搜索需要 LLM / 本地模型）
+		window.__e2ePlugin.getInstance().translator.getLastSearchTiming = () => ({
+			phases: [
+				{ name: "关键词召回", ms: 0.2 },
+				{ name: "LLM 精排", ms: 812.1 },
+			],
+			totalMs: 812.3,
+			counters: { 插件数: 6000, 关键词命中: 41 },
+			at: 1700000000000,
+		});
+		return window.__e2ePlugin
+			.renderSettingItems()
+			.find((i) => i.group === "搜索诊断");
+	});
+
+	expect(diag).toBeTruthy();
+	// 总计与本地阶段口径
+	expect(diag.html).toContain("总计 812.3 ms");
+	expect(diag.html).toContain("本地阶段 0.2 ms");
+	// 每个阶段一行，含耗时与占比条（原生 progress）
+	expect(diag.html).toContain("关键词召回");
+	expect(diag.html).toContain("0.2 ms");
+	expect(diag.html).toContain("LLM 精排");
+	expect(diag.html).toContain("812.1 ms");
+	expect(diag.html).toContain("<progress");
+	// 计数器用于判断「慢」还是「配置不对」
+	expect(diag.html).toContain("插件数=6000");
+	expect(diag.html).toContain("关键词命中=41");
+	expect(diag.buttons).toContain("刷新");
+});

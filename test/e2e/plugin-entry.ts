@@ -6,7 +6,7 @@
  */
 import "./obsidian-mock";
 import ChinesePluginMarketPlugin from "../../src/app/plugin";
-import { makeApp } from "./obsidian-mock";
+import { makeApp, Setting } from "./obsidian-mock";
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 import manifest from "../../manifest.json";
 
@@ -50,10 +50,56 @@ async function startPlugin(presetData: Record<string, unknown> = {}): Promise<St
 	};
 }
 
+/** 单个「自定义 render」设置项的渲染结果 */
+interface RenderedSettingItem {
+	group: string;
+	name: string;
+	html: string;
+	buttons: string[];
+}
+
+/**
+ * 渲染设置页里所有「自定义 render」条目，返回其产出。
+ *
+ * 为什么需要：`getSettingDefinitions()` 中有若干条目走自定义 render 回调而非声明式
+ * control（鸣谢 / 向量索引 / 自托管源 / 搜索诊断）。原先 e2e 只统计 settingTabs 数量，
+ * 这些回调从未被执行 —— 其中的 Obsidian API 误用只能在用户真实打开设置页时才暴露。
+ * 这里把它们全部跑一遍，使「设置页能渲染出来」成为可断言的事实。
+ */
+function renderSettingItems(): RenderedSettingItem[] {
+	const tab = instance?.settingTabs?.[0] as
+		| {
+				getSettingDefinitions?: () => {
+					heading?: string;
+					items?: { name?: string; render?: (s: Setting) => void }[];
+				}[];
+		  }
+		| undefined;
+	if (!tab || typeof tab.getSettingDefinitions !== "function") return [];
+
+	const out: RenderedSettingItem[] = [];
+	for (const group of tab.getSettingDefinitions()) {
+		for (const item of group.items ?? []) {
+			if (typeof item.render !== "function") continue;
+			const host = document.createElement("div");
+			const setting = new Setting(host);
+			item.render(setting);
+			out.push({
+				group: group.heading ?? "",
+				name: item.name ?? "",
+				html: host.innerHTML,
+				buttons: setting.buttons.map((b) => b.text),
+			});
+		}
+	}
+	return out;
+}
+
 (window as any).__e2ePlugin = {
 	startPlugin,
 	getInstance: () => instance,
 	getData: () => (instance ? instance._data : null),
+	renderSettingItems,
 	reset: () => {
 		instance = null;
 	},

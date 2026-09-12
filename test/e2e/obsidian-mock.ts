@@ -173,13 +173,100 @@ export class PluginSettingTab {
 	containerEl = document.createElement("div");
 }
 
+/** Setting.addButton 回调收到的按钮对象（仅覆盖设置页实际用到的 API） */
+interface ButtonMock {
+	setButtonText(text: string): ButtonMock;
+	setDisabled(disabled: boolean): ButtonMock;
+	setTooltip(tooltip: string): ButtonMock;
+	/** 「清空缓存 / 清空 AI 资产」等危险操作按钮用 */
+	setDestructive(): ButtonMock;
+	setWarning(): ButtonMock;
+	setCta(): ButtonMock;
+	setIcon(icon: string): ButtonMock;
+	setClass(cls: string): ButtonMock;
+	onClick(handler: () => void): ButtonMock;
+}
+
+/**
+ * E2E mock of Obsidian 的 Setting。
+ *
+ * 提供真实的 DOM 结构（settingEl / infoEl / descEl / controlEl），让设置页里那些
+ * **自定义 render 回调**（鸣谢 / 向量索引 / 自托管源 / 搜索诊断）能在 e2e 中真正跑起来；
+ * addButton 会真正调用回调并把按钮挂到 DOM，使按钮文案与 onClick 也被覆盖。
+ *
+ * 先前的桩实现没有这些元素，导致上述 render 回调在 e2e 里从未被执行 ——
+ * 其中的 Obsidian API 误用只会在用户真实打开设置页时才暴露。
+ */
 export class Setting {
-	constructor(_containerEl?: HTMLElement) {}
-	setName(): this { return this; }
-	setDesc(): this { return this; }
-	addButton(): this { return this; }
+	settingEl: HTMLElement;
+	infoEl: HTMLElement;
+	nameEl: HTMLElement;
+	descEl: HTMLElement;
+	controlEl: HTMLElement;
+	/** 由 addButton 记录，供断言按钮文案 / 禁用态 */
+	buttons: { text: string; disabled: boolean }[] = [];
+
+	constructor(containerEl?: HTMLElement) {
+		const root = containerEl ?? document.createElement("div");
+		this.settingEl = document.createElement("div");
+		root.appendChild(this.settingEl);
+		this.infoEl = document.createElement("div");
+		this.nameEl = document.createElement("div");
+		this.descEl = document.createElement("div");
+		this.infoEl.appendChild(this.nameEl);
+		this.infoEl.appendChild(this.descEl);
+		this.controlEl = document.createElement("div");
+		this.settingEl.appendChild(this.infoEl);
+		this.settingEl.appendChild(this.controlEl);
+	}
+
+	setName(name: string): this {
+		this.nameEl.setText(name);
+		return this;
+	}
+	setDesc(desc: string): this {
+		this.descEl.setText(desc);
+		return this;
+	}
+	addButton(cb: (btn: ButtonMock) => void): this {
+		const el = document.createElement("button");
+		this.controlEl.appendChild(el);
+		const record = { text: "", disabled: false };
+		this.buttons.push(record);
+		const stub: ButtonMock = {
+			setButtonText: (t) => {
+				record.text = t;
+				el.textContent = t;
+				return stub;
+			},
+			setDisabled: (d) => {
+				record.disabled = d;
+				el.disabled = d;
+				return stub;
+			},
+			onClick: (h) => {
+				el.addEventListener("click", h);
+				return stub;
+			},
+			setTooltip: () => stub,
+			setDestructive: () => {
+				el.classList.add("mod-warning");
+				return stub;
+			},
+			setWarning: () => stub,
+			setCta: () => stub,
+			setIcon: () => stub,
+			setClass: (c) => {
+				el.classList.add(c);
+				return stub;
+			},
+		};
+		cb(stub);
+		return this;
+	}
 	addToggle(): this { return this; }
 	addText(): this { return this; }
+	addDropdown(): this { return this; }
 }
 
 export class ItemView {
@@ -313,6 +400,14 @@ export function setIcon(el: HTMLElement, _icon: string): void {
 
 export async function requestUrl(_opts: unknown): Promise<never> {
 	throw new Error("requestUrl 在 E2E 中不应被调用");
+}
+
+/**
+ * E2E mock：始终认为宿主 API 版本满足要求。
+ * 生产用法是安装/更新前的 minAppVersion 守卫；e2e 无需模拟「宿主过旧」这条分支。
+ */
+export function requireApiVersion(_version: string): boolean {
+	return true;
 }
 
 export { debounce };
