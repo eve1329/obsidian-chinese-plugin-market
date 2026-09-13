@@ -412,7 +412,22 @@ export function normalizeVector(v: number[]): number[] {
 
 /**
  * 从一组条目向量中，取与 queryVec 余弦相似度最高的前 k 个。
+ *
+ * 实现为「有界最小堆」的部分选择，把选择阶段从 O(n log n) 降到 O(n log k)。
+ *
+ * 收益有限，别高估：实测（6000 条 × 512 维、k=300，见 scripts/bench-search-perf.mjs
+ * 实验 3）整体约 1.35x。瓶颈其实是点积本身（n × dim 次乘加），选择阶段只占小头。
+ * 曾以为「省下 n 个 { index, score } 对象分配」是主要收益，实测并不成立——改用并行
+ * 类型化数组反而更慢（比较器要读两个数组，抵消了分配收益），故未采用。
+ *
+ * tie-break 与旧实现（score 降序 + Array.sort 稳定序）保持一致：同分按 index 升序。
+ *
+ * 维度不一致的条目会被拒绝并**整体抛错**（旧实现是静默按较短维度截断）。余弦在维度
+ * 不同时没有定义，静默截断会把「索引与 query 来自不同 embedding 模型」这类 bug
+ * 伪装成正常排序结果。
+ *
  * @returns [{ index, score }]，按 score 降序，最多 k 个；k<=0 或无向量返回空。
+ * @throws 存在与 queryVec 维度不同的条目时抛出（调用方应视为召回失败并降级）。
  */
 export function topKBySimilarity(
 	queryVec: number[],
@@ -426,19 +441,91 @@ export function topKBySimilarity(
 	const dim = queryVec.length;
 	// 归一化 query（索引向量已在 buildVectorIndex 归一化，norm=1）
 	const q = normalizeVector(queryVec);
+	const n = itemVecs.length;
+	const limit = Math.min(k, n);
+
+	// 堆内并行数组：heapScore 是堆序键，heapIdx 只随交换同步搬运（不参与比较）。
+	const heapIdx = new Int32Array(limit);
+	const heapScore = new Float64Array(limit);
+	let size = 0;
+
+	/** a 是否比 b 更差（更差者浮到堆顶）。score 小者差；同分 index 大者差。 */
+	const isWorse = (iA: number, sA: number, iB: number, sB: number): boolean =>
+		sA < sB || (sA === sB && iA > iB);
+
+	const swap = (a: number, b: number): void => {
+		const ti = heapIdx[a];
+		heapIdx[a] = heapIdx[b];
+		heapIdx[b] = ti;
+		const ts = heapScore[a];
+		heapScore[a] = heapScore[b];
+		heapScore[b] = ts;
+	};
+
+	const siftUp = (c: number): void => {
+		while (c > 0) {
+			const p = (c - 1) >> 1;
+			if (!isWorse(heapIdx[c], heapScore[c], heapIdx[p], heapScore[p])) break;
+			swap(c, p);
+			c = p;
+		}
+	};
+
+	const siftDown = (c: number): void => {
+		for (;;) {
+			const l = 2 * c + 1;
+			if (l >= size) break;
+			const r = l + 1;
+			// 取左右孩子中更差的那个
+			const m = r < size && isWorse(heapIdx[r], heapScore[r], heapIdx[l], heapScore[l]) ? r : l;
+			if (!isWorse(heapIdx[m], heapScore[m], heapIdx[c], heapScore[c])) break;
+			swap(c, m);
+			c = m;
+		}
+	};
 
 	// 纯点积：所有向量已归一化 → 余弦 = dot。单次扫描，避免任何 norm 计算。
 	// itemVecs 元素为 ArrayLike<number>（number[] 或 Float32Array 均可），
 	// 直接吃 getAllVecs 的 Float32Array，消除加载时的 Array.from 二次转换。
-	const scored: { index: number; score: number }[] = [];
-	for (let vi = 0; vi < itemVecs.length; vi++) {
+	let dimMismatch = 0;
+	for (let vi = 0; vi < n; vi++) {
 		const v = itemVecs[vi];
+		// 维度必须一致：余弦在不同维度上没有定义。旧实现写 `i < dim && i < v.length`，
+		// 对维度不一致的向量会**静默按较短维度截断** —— 于是「query 向量来自旧模型」
+		// 这类 bug 会给出看似正常的错误排序，不报错、不告警（曾导致换 embedding 模型后
+		// 静默错排）。这里改为显式拒绝，把同类问题从「悄悄算错」变成「立刻可见」。
+		if (v.length !== dim) {
+			dimMismatch++;
+			continue;
+		}
 		let dot = 0;
-		for (let i = 0; i < dim && i < v.length; i++) dot += q[i] * v[i];
-		if (dot >= minScore) scored.push({ index: vi, score: dot });
+		for (let i = 0; i < dim; i++) dot += q[i] * v[i];
+		if (dot < minScore) continue;
+
+		if (size < limit) {
+			heapIdx[size] = vi;
+			heapScore[size] = dot;
+			siftUp(size);
+			size++;
+		} else if (isWorse(heapIdx[0], heapScore[0], vi, dot)) {
+			// 优于当前堆顶（前 k 中最差的那个）→ 替换并重新下沉
+			heapIdx[0] = vi;
+			heapScore[0] = dot;
+			siftDown(0);
+		}
 	}
-	scored.sort((a, b) => b.score - a.score);
-	return scored.slice(0, k);
+
+	if (dimMismatch > 0) {
+		throw new Error(
+			`topKBySimilarity: 向量维度不一致（query=${dim} 维，${dimMismatch}/${n} 条条目维度不同）——` +
+				`通常意味着索引与查询来自不同的 embedding 模型，或切换模型后索引未重建`
+		);
+	}
+
+	const out: { index: number; score: number }[] = new Array(size);
+	for (let i = 0; i < size; i++) out[i] = { index: heapIdx[i], score: heapScore[i] };
+	out.sort((a, b) => b.score - a.score || a.index - b.index);
+	return out;
 }
 
 /**

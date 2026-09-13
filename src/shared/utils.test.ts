@@ -235,6 +235,18 @@ describe("topKBySimilarity", () => {
 		expect(topKBySimilarity([], items, 2)).toEqual([]);
 		expect(topKBySimilarity([1, 0, 0], [], 2)).toEqual([]);
 	});
+
+	it("维度不一致必须抛错，而不是静默按较短维度截断", () => {
+		// 回归：query 2 维 / 条目 3 维。旧实现只比较前 2 维并返回「看似正常」的分数，
+		// 于是「换 embedding 模型后 query 向量来自旧模型」会表现为静默错排、不报错。
+		expect(() => topKBySimilarity([1, 0], [[1, 0, 0]], 1)).toThrow(/维度不一致/);
+		// 混合维度（部分条目不一致）同样拒绝，不放过部分损坏的索引
+		expect(() => topKBySimilarity([1, 0, 0], [[1, 0, 0], [1, 0]], 2)).toThrow(/维度不一致/);
+	});
+
+	it("维度一致时不受新增校验影响", () => {
+		expect(() => topKBySimilarity([1, 0, 0], items, 2)).not.toThrow();
+	});
 });
 
 describe("contentHash", () => {
