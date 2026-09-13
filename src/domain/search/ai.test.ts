@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { setHttpClient, resetHttpClient } from "@data/net/http-port";
-import { AISearcher } from "@domain/search/ai";
+import { AISearcher, buildBm25Index, bm25RecallScores } from "@domain/search/ai";
+import { computeIndexFingerprints } from "@shared/fingerprint";
+import { bm25Score, tokenizeForBM25, BM25_K1, BM25_B } from "@domain/search/bm25";
+import { t2sForEmbed } from "@translation/lexicon/t2s";
+import { expandQuery } from "@translation/lexicon/synonyms";
+import { PHASE } from "@domain/search/search-timing";
+import { logger } from "@shared/logger";
 import { LLMClient } from "@translation/api/api";
 import { PluginTagService } from "@domain/catalog/plugin-tags";
 
@@ -15,7 +21,7 @@ const PLUGINS = [
 	{ id: "translate", name: "Translate", description: "Translate text in notes" },
 ];
 
-function makeSearcher() {
+function makeSearcher(embeddingSource: "keyword" | "local" = "keyword") {
 	const tagService = new PluginTagService();
 	tagService.load({
 		dataview: { category: "data", tags: ["query"] },
@@ -32,7 +38,7 @@ function makeSearcher() {
 		baseURL: "https://api.example.com",
 		apiKey: "sk-test",
 		model: "test-model",
-		embedding: { source: "keyword" as const },
+		embedding: { source: embeddingSource },
 	};
 	const searcher = new AISearcher(aiConfig, llm, tagService);
 	return { searcher, llm };
@@ -161,5 +167,306 @@ describe("AISearcher 降级健壮性", () => {
 		expect(result.reasons).toBeDefined();
 		expect(Object.keys(result.reasons!)).not.toContain("git");
 		expect(Object.keys(result.reasons!)).toEqual(["dataview", "calendar", "translate"]);
+	});
+});
+
+describe("搜索分段计时（生产埋点）", () => {
+	beforeEach(() => {
+		req.mockReset();
+		setHttpClient({ request: req });
+	});
+	afterEach(() => {
+		resetHttpClient();
+	});
+
+	it("搜索前无快照，搜索后可读到分段与计数", async () => {
+		const { searcher } = makeSearcher();
+		req.mockRejectedValue(new Error("llm down")); // 触发精排降级，顺带验证降级计数
+
+		expect(searcher.getLastSearchTiming()).toBeNull();
+
+		await searcher.search("query notes", PLUGINS as any);
+
+		const snap = searcher.getLastSearchTiming();
+		expect(snap).not.toBeNull();
+		const names = snap!.phases.map((p) => p.name);
+		expect(names).toContain("关键词召回");
+		expect(names).toContain("标题模糊");
+		expect(names).toContain("RRF 融合");
+		expect(names).toContain(PHASE.llmRank);
+
+		expect(snap!.counters["插件数"]).toBe(PLUGINS.length);
+		expect(snap!.counters["关键词命中"]).toBeGreaterThan(0);
+		expect(snap!.counters["精排降级"]).toBe(1);
+		expect(snap!.counters["结果数"]).toBeGreaterThan(0);
+		expect(snap!.totalMs).toBeGreaterThanOrEqual(0);
+	});
+
+	it("失败路径同样留下快照（失败发生在哪一步是关键信息）", async () => {
+		const { searcher } = makeSearcher();
+		req.mockRejectedValue(new Error("llm down"));
+
+		// 无任何本地命中 → 走 LLM 兜底召回 → 全部批次失败 → 抛错
+		await expect(searcher.search("zzzz不存在zzzz", PLUGINS as any)).rejects.toThrow();
+
+		// 若只在成功路径记录，这里会是 null，出问题时反而没有可用的计时数据
+		expect(searcher.getLastSearchTiming()).not.toBeNull();
+	});
+
+	it("localSearch 记录计时且不含 LLM 阶段（纯本地路径）", async () => {
+		const { searcher } = makeSearcher();
+		req.mockRejectedValue(new Error("localSearch 不应调用 LLM"));
+
+		await searcher.localSearch("query notes", PLUGINS as any);
+
+		const snap = searcher.getLastSearchTiming();
+		expect(snap).not.toBeNull();
+		expect(snap!.phases.map((p) => p.name)).not.toContain(PHASE.llmRank);
+		expect(snap!.counters["结果数"]).toBeGreaterThan(0);
+	});
+
+	it("快照是拷贝：外部改动不影响内部状态", async () => {
+		const { searcher } = makeSearcher();
+		req.mockRejectedValue(new Error("llm down"));
+		await searcher.search("query notes", PLUGINS as any);
+
+		const first = searcher.getLastSearchTiming()!;
+		first.phases.push({ name: "伪造", ms: 999 });
+		first.counters["伪造"] = 1;
+
+		expect(searcher.getLastSearchTiming()!.phases.map((p) => p.name)).not.toContain("伪造");
+		expect(searcher.getLastSearchTiming()!.counters["伪造"]).toBeUndefined();
+	});
+
+	it("本地阶段超过阈值时额外告警，且告警文案说明已排除 LLM 耗时", async () => {
+		const { searcher } = makeSearcher();
+		req.mockRejectedValue(new Error("llm down"));
+
+		// 每次 performance.now() 前进 200ms。注意 measure() 会调用两次 now()（起止），
+		// 但阶段耗时是两次之差 = 1 个增量，故 3 个本地阶段合计 600ms > 400ms 阈值。
+		let clock = 0;
+		const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => (clock += 200));
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+		// 关键：mockRestore() 会连同已记录的调用一起清空，必须在 restore 之前取出。
+		let messages: string[] = [];
+		try {
+			await searcher.search("query notes", PLUGINS as any);
+			messages = warnSpy.mock.calls.map((c) => String(c[0]));
+		} finally {
+			nowSpy.mockRestore();
+			warnSpy.mockRestore();
+		}
+
+		const slowWarn = messages.find((m) => m.includes("本地检索阶段偏慢"));
+		expect(slowWarn).toBeDefined();
+		expect(slowWarn!).toContain("不含 LLM 与 embedding 往返");
+	});
+
+	it("正常速度的搜索不触发慢查询告警", async () => {
+		const { searcher } = makeSearcher();
+		req.mockRejectedValue(new Error("llm down"));
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+		let messages: string[] = [];
+		try {
+			await searcher.search("query notes", PLUGINS as any);
+			messages = warnSpy.mock.calls.map((c) => String(c[0]));
+		} finally {
+			warnSpy.mockRestore();
+		}
+
+		expect(messages.some((m) => m.includes("本地检索阶段偏慢"))).toBe(false);
+		// 前提校验：本次搜索确实产生过 warn（LLM 精排失败会 warn）。
+		// 若没有这条断言，「没告警」可能只是因为根本没采集到调用（假阴性）。
+		expect(messages.length).toBeGreaterThan(0);
+	});
+
+	it("向量路启用时阶段不重叠，且失败原因如实上报", async () => {
+		// 回归 1：search() 曾用 measure("向量召回") 包住 vectorRecallScores，而后者内部又
+		// measure("向量索引")/measure("query 编码+余弦")。嵌套导致 localPhaseMs 把整段
+		// 向量耗时算两遍，慢查询告警在开启向量搜索时虚报。
+		// 现有测试全用 keyword 模式，结构上覆盖不到这条路径。
+		const { searcher } = makeSearcher("local");
+		req.mockRejectedValue(new Error("llm down"));
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+		let warnArgs: unknown[][] = [];
+		try {
+			// 测试环境未注入 worker 源码加载器，本地模型必然加载失败 → 向量路降级；
+			// 但阶段计时照常记录，足以验证结构性质。
+			await searcher.localSearch("query notes", PLUGINS as any);
+			warnArgs = warnSpy.mock.calls.map((c) => [...c]);
+		} finally {
+			warnSpy.mockRestore();
+		}
+
+		const names = searcher.getLastSearchTiming()!.phases.map((p) => p.name);
+		// 确实走向量路（索引阶段被记录）
+		expect(names).toContain(PHASE.vectorIndex);
+		// 伞形阶段必须不存在
+		expect(names).not.toContain("向量召回");
+		// 本地阶段只含我们自己的代码，不含向量索引 / query 编码
+		expect(names).toContain(PHASE.keyword);
+		expect(names).toContain(PHASE.fuzzy);
+		expect(names).toContain(PHASE.rrf);
+
+		// 回归 2：失败原因应是真实原因，而不是被 dispose 抹掉 this.initPromise 后
+		// 的「worker not ready」—— 后者既误导调用方，又留下 unhandled rejection。
+		const vectorWarn = warnArgs.find((a) => String(a[0]).includes("向量召回失败"));
+		expect(vectorWarn).toBeDefined();
+		expect(String((vectorWarn![1] as Error)?.message)).toContain("worker 源码加载器未注入");
+	});
+});
+
+describe("BM25 倒排索引（与单条打分等价性）", () => {
+	// 合成语料：覆盖中文三元组、ASCII 词、超短描述、空描述，以及 p8/p9 这组
+	// 「等长 + 同词」的构造，用于验证同分时的 tie-break。
+	const CORPUS = [
+		{ id: "p0", name: "Dataview", description: "把笔记当作数据库查询，支持类 SQL 语法" },
+		{ id: "p1", name: "Calendar", description: "日历视图，追踪每日笔记与任务" },
+		{ id: "p2", name: "Kanban", description: "看板视图，把笔记组织成任务卡片" },
+		{ id: "p3", name: "Excalidraw", description: "手绘白板，支持思维导图与流程图" },
+		{ id: "p4", name: "Templater", description: "模板引擎，批量生成笔记内容" },
+		{ id: "p5", name: "Git", description: "版本控制，备份你的笔记仓库" },
+		{ id: "p6", name: "笔记助手", description: "笔记" },
+		{ id: "p7", name: "Empty", description: "" },
+		{ id: "p8", name: "Twin", description: "笔记 同步" },
+		{ id: "p9", name: "Duo", description: "笔记 同步" },
+	];
+
+	const index = buildBm25Index(CORPUS, computeIndexFingerprints(CORPUS).bm25);
+
+	/**
+	 * 参考实现：逐条文档调用 bm25Score（即重构前 ai.ts 的做法）。
+	 * 与被测的倒排路径完全独立，用于证明「换索引结构不改分数」。
+	 */
+	function referenceScores(query: string): Map<string, number> {
+		const queryTokens = tokenizeForBM25(t2sForEmbed(expandQuery(query.trim())));
+		const out = new Map<string, number>();
+		if (queryTokens.length === 0) return out;
+		const qtf = new Map<string, number>();
+		for (const t of queryTokens) qtf.set(t, (qtf.get(t) ?? 0) + 1);
+		for (const p of CORPUS) {
+			const docTokens = tokenizeForBM25(t2sForEmbed(`${p.name} ${p.description}`));
+			const score = bm25Score(
+				queryTokens, docTokens, index.df, index.N, index.avgdl, BM25_K1, BM25_B, qtf
+			);
+			if (score > 0) out.set(p.id, score);
+		}
+		return out;
+	}
+
+	const QUERIES = ["笔记", "日历", "思维导图", "dataview", "模板 笔记", "笔记 同步", "zzz不存在", "", "   "];
+
+	for (const query of QUERIES) {
+		it(`query="${query}" 命中集合与分数与参考实现一致`, () => {
+			const actual = bm25RecallScores(query, index);
+			const expected = referenceScores(query);
+			expect([...actual.keys()].sort()).toEqual([...expected.keys()].sort());
+			for (const [id, s] of expected) {
+				// 逐位相等：两条路径的 term 遍历顺序相同，浮点累加顺序也相同，
+				// 因此不该有误差。用 toBeCloseTo 会掩盖「公式被改坏但差得很小」的情况。
+				expect(actual.get(id)).toBe(s);
+			}
+		});
+	}
+
+	it("手算基准：等长单 token 语料下得分应恰为 ln(2)", () => {
+		// 为什么需要这条：上面的「倒排 vs bm25Score」对拍**证明不了公式本身正确** ——
+		// bm25Score 现已改为调用 bm25Idf/bm25LenNorm/bm25TermWeight，与倒排路径共用同一批
+		// 原语，原语若有公式错误，两边会一起错、对拍照样通过。
+		//
+		// 这里构造一个能精确手算的语料：两条文档各只有 1 个 token，其中一条含查询词。
+		//   N = 2, avgdl = 1  → 长度归一分母 = 1 - 0.75 + 0.75 × (1/1) = 1
+		//   df("笔记") = 1    → IDF = ln((2-1+0.5)/(1+0.5) + 1) = ln 2
+		//   tf = 1, k1 = 1.5  → termWeight = 1×2.5 / (1 + 1.5×1) = 1
+		//   ⇒ score = 1 × ln2 × 1 = ln 2
+		// 期望值由公式推导得出、不来自生产代码，因此能发现原语自身的公式错误。
+		const corpus = [
+			{ id: "e0", name: "A", description: "" },
+			{ id: "e1", name: "笔记", description: "" },
+		];
+		const handIndex = buildBm25Index(corpus, computeIndexFingerprints(corpus).bm25);
+		const scores = bm25RecallScores("笔记", handIndex);
+
+		expect(scores.get("e1")).toBe(Math.LN2);
+		expect(scores.has("e0")).toBe(false);
+	});
+
+	it("手算基准（文档长度不等）：把 k1 与 b 也钉住", () => {
+		// 上面那条语料里 k1 与 b 会代数约掉 —— lenNorm = 1-b+b×(1/1) = 1，
+		// termWeight = (1×(k1+1))/(1+k1×1) = 1，对任意 k1/b 都成立，
+		// 所以它只能验证 IDF 公式。这里用文档长度不等的语料让两者真正参与计算：
+		//   d0: ["笔记"]             → docLen = 1
+		//   d1: ["甲","笔记","笔记"]  → docLen = 3
+		//   N=2, avgdl=(1+3)/2=2, df("笔记")=2
+		//   IDF = ln((2-2+0.5)/(2+0.5) + 1) = ln(1.2)
+		//   d0: lenNorm = 1-0.75+0.75×(1/2) = 0.625 → termWeight = 1×2.5/(1+1.5×0.625)
+		//   d1: lenNorm = 1-0.75+0.75×(3/2) = 1.375 → termWeight = 2×2.5/(2+1.5×1.375)
+		// 期望值把 k1=1.5、b=0.75 硬编码在表达式里：改动这两个常量会让断言失败。
+		const corpus = [
+			{ id: "d0", name: "笔记", description: "" },
+			{ id: "d1", name: "甲", description: "笔记 笔记" },
+		];
+		const handIndex = buildBm25Index(corpus, computeIndexFingerprints(corpus).bm25);
+		const scores = bm25RecallScores("笔记", handIndex);
+
+		const idf = Math.log(1.2);
+		expect(scores.get("d0")).toBeCloseTo(idf * (2.5 / (1 + 1.5 * 0.625)), 12);
+		expect(scores.get("d1")).toBeCloseTo(idf * (5 / (2 + 1.5 * 1.375)), 12);
+		// 短文档命中 1 次应高于长文档命中 2 次（长度归一化生效）
+		expect(scores.get("d0")!).toBeGreaterThan(scores.get("d1")!);
+	});
+
+	it("结果按 (score desc, 插件列表序 asc) 排序 —— 同分 tie-break 与旧实现一致", () => {
+		const actual = bm25RecallScores("笔记", index);
+		const ids = [...actual.keys()];
+		const pos = new Map(CORPUS.map((p, i) => [p.id, i]));
+		for (let i = 1; i < ids.length; i++) {
+			const prev = actual.get(ids[i - 1])!;
+			const cur = actual.get(ids[i])!;
+			// 分数严格降序；同分则插件列表序严格递增
+			if (prev === cur) {
+				expect(pos.get(ids[i - 1])!).toBeLessThan(pos.get(ids[i])!);
+			} else {
+				expect(prev).toBeGreaterThan(cur);
+			}
+		}
+		// p8/p9 等长同词 → 必然同分，且 p8 在 p9 之前
+		expect(actual.get("p8")).toBeCloseTo(actual.get("p9")!, 12);
+		expect(ids.indexOf("p8")).toBeLessThan(ids.indexOf("p9"));
+	});
+
+	it("topK 截断：只保留前 k 条，且是全量结果的前缀", () => {
+		const full = bm25RecallScores("笔记", index);
+		expect(full.size).toBeGreaterThan(2);
+		const capped = bm25RecallScores("笔记", index, 2);
+		expect(capped.size).toBe(2);
+		expect([...capped.keys()]).toEqual([...full.keys()].slice(0, 2));
+	});
+
+	it("getBm25Index 按内容指纹缓存：内容不变复用同一引用，中间条目变化则重建", () => {
+		const { searcher } = makeSearcher();
+
+		const first = searcher.getBm25Index(CORPUS);
+		expect(searcher.getBm25Index(CORPUS)).toBe(first); // 内容不变 → 同一实例
+
+		// 中间条目的描述变化：条目数、首尾 id 都没变
+		// （旧的「长度 + 首尾 id」签名会漏判，继续用过期分词打分）
+		const mutated = CORPUS.map((p) => ({ ...p }));
+		mutated[2].description += "（已更新）";
+		expect(mutated.length).toBe(CORPUS.length);
+		expect(mutated[0].id).toBe(CORPUS[0].id);
+		expect(mutated[mutated.length - 1].id).toBe(CORPUS[CORPUS.length - 1].id);
+
+		expect(searcher.getBm25Index(mutated)).not.toBe(first);
+	});
+
+	it("传入预计算指纹时不再自行遍历（避免每次搜索算两遍）", () => {
+		const { searcher } = makeSearcher();
+		const sig = computeIndexFingerprints(CORPUS).bm25;
+		const a = searcher.getBm25Index(CORPUS, sig);
+		// 同一个预计算指纹 → 命中缓存
+		expect(searcher.getBm25Index(CORPUS, sig)).toBe(a);
+		// 与不传预计算指纹时的结果一致（签名语义相同）
+		expect(searcher.getBm25Index(CORPUS)).toBe(a);
 	});
 });
