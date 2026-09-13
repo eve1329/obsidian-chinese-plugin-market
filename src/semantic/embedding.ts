@@ -139,6 +139,12 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 	readonly name = "api";
 	/** 单次请求最多编码多少条文本，避免请求体过大 / 超时。 */
 	private static readonly BATCH = 64;
+	/** 单批初始请求失败后的最大重试次数（总尝试次数 = 1 + MAX_RETRIES）。 */
+	private static readonly MAX_RETRIES = 5;
+	/** 未提供 Retry-After 时的指数退避起始等待时间。 */
+	private static readonly RETRY_BASE_DELAY_MS = 500;
+	/** 防止服务端返回过大的 Retry-After 导致一次搜索无限期挂起。 */
+	private static readonly RETRY_MAX_DELAY_MS = 30_000;
 	/**
 	 * 分批请求的并发上限。分批串行时 6000 条 / 64 ≈ 94 个请求排队，索引构建时间
 	 * 完全被网络往返主导；受控并发可显著缩短。上限刻意保持克制，避免触发服务端限流。
@@ -157,8 +163,9 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 			batches.push(texts.slice(i, i + ApiEmbeddingProvider.BATCH));
 		}
 
-		// 失败即停止派发后续批次：鉴权/限流类错误下若继续跑完剩余批次，会对已经
-		// 拒绝请求的服务端无意义地连打。在途批次自然结束，不再派发新的。
+		// 单批在瞬时错误下会先按退避策略重试；重试耗尽后停止派发后续批次，避免
+		// 鉴权/限流或持续网络故障时继续把剩余请求打向已经拒绝的服务端。
+		// 已经在途的批次自然结束，不再派发新的。
 		let aborted = false;
 		const results = await mapWithConcurrency(
 			batches,
@@ -178,55 +185,99 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 	}
 
 	private async embedBatch(batch: string[]): Promise<number[][]> {
-		const response = await netRequest({
-			url: `${normalizeBaseUrl(this.config.baseURL)}/v1/embeddings`,
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${this.config.apiKey}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				model: this.config.model,
-				input: batch,
-			}),
-		});
-
-		if (response.status < 200 || response.status >= 300) {
-			let detail = "";
+		let retry = 0;
+		for (;;) {
+			let response: Awaited<ReturnType<typeof netRequest>>;
 			try {
-				const errJson = response.json as {
-					error?: { message?: string };
-					message?: string;
-				} | null;
-				detail = errJson?.error?.message || errJson?.message || "";
-			} catch {
-				detail = (response.text || "").slice(0, 120);
+				response = await netRequest({
+					url: `${normalizeBaseUrl(this.config.baseURL)}/v1/embeddings`,
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.config.apiKey}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						model: this.config.model,
+						input: batch,
+					}),
+				});
+			} catch (e: unknown) {
+				// 网络断开、宿主请求超时没有 HTTP 状态码，只能按瞬时故障重试。
+				if (retry < ApiEmbeddingProvider.MAX_RETRIES) {
+					await this.waitBeforeRetry(retry);
+					retry++;
+					continue;
+				}
+				throw e;
 			}
-			throw new Error(
-				`Embedding 请求失败 HTTP ${response.status}${detail ? `：${detail}` : ""}`
-			);
-		}
 
-		interface EmbeddingDataItem {
-			index?: number;
-			embedding?: unknown;
-		}
-		const data = (response.json as { data?: EmbeddingDataItem[] | null })?.data;
-		if (!Array.isArray(data)) {
-			throw new Error("Embedding 响应格式异常（缺少 data 数组）");
-		}
-		// 按 index 排序，保证与输入顺序一致
-		const sorted = [...data].sort(
-			(a, b) => (a?.index ?? 0) - (b?.index ?? 0)
-		);
-		return sorted.map((d) => {
-			const emb = d?.embedding;
-			if (!Array.isArray(emb)) {
-				throw new Error("Embedding 响应缺少 embedding 向量");
+			if (response.status < 200 || response.status >= 300) {
+				let detail = "";
+				try {
+					const errJson = response.json as {
+						error?: { message?: string };
+						message?: string;
+					} | null;
+					detail = errJson?.error?.message || errJson?.message || "";
+				} catch {
+					detail = (response.text || "").slice(0, 120);
+				}
+				if (isRetryableEmbeddingStatus(response.status) && retry < ApiEmbeddingProvider.MAX_RETRIES) {
+					await this.waitBeforeRetry(retry, retryAfterMs(response.headers));
+					retry++;
+					continue;
+				}
+				throw new Error(
+					`Embedding 请求失败 HTTP ${response.status}${detail ? `：${detail}` : ""}`
+				);
 			}
-			return emb as number[];
-		});
+
+			interface EmbeddingDataItem {
+				index?: number;
+				embedding?: unknown;
+			}
+			const data = (response.json as { data?: EmbeddingDataItem[] | null })?.data;
+			if (!Array.isArray(data)) {
+				throw new Error("Embedding 响应格式异常（缺少 data 数组）");
+			}
+			// 按 index 排序，保证与输入顺序一致
+			const sorted = [...data].sort(
+				(a, b) => (a?.index ?? 0) - (b?.index ?? 0)
+			);
+			return sorted.map((d) => {
+				const emb = d?.embedding;
+				if (!Array.isArray(emb)) {
+					throw new Error("Embedding 响应缺少 embedding 向量");
+				}
+				return emb as number[];
+			});
+		}
 	}
+
+	private async waitBeforeRetry(retry: number, retryAfter?: number): Promise<void> {
+		const fallback = ApiEmbeddingProvider.RETRY_BASE_DELAY_MS * (2 ** retry);
+		const delay = Math.min(
+			ApiEmbeddingProvider.RETRY_MAX_DELAY_MS,
+			Math.max(0, retryAfter ?? fallback),
+		);
+		await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+	}
+}
+
+function isRetryableEmbeddingStatus(status: number): boolean {
+	return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+/** 解析 Retry-After 的秒数或 HTTP-date；异常/负值交给指数退避。 */
+function retryAfterMs(headers: Record<string, string> | undefined): number | undefined {
+	if (!headers) return undefined;
+	const raw = Object.entries(headers).find(([key]) => key.toLowerCase() === "retry-after")?.[1]?.trim();
+	if (!raw) return undefined;
+	const seconds = Number(raw);
+	if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+	const at = Date.parse(raw);
+	if (!Number.isNaN(at)) return Math.max(0, at - Date.now());
+	return undefined;
 }
 
 /**

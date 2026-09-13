@@ -1,7 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { setHttpClient, resetHttpClient } from "@data/net/http-port";
 import {
 	buildVectorIndex,
 	vectorRecall,
+	ApiEmbeddingProvider,
 	LocalEmbeddingProvider,
 	DEFAULT_LOCAL_MODEL,
 	getEmbeddingIdentity,
@@ -392,6 +394,81 @@ describe("LocalEmbeddingProvider（阶段 2.5）", () => {
 describe("本地 embedding 默认模型", () => {
 	it("DEFAULT_LOCAL_MODEL 为面向中文的 bge-small-zh", () => {
 		expect(DEFAULT_LOCAL_MODEL).toBe("Xenova/bge-small-zh-v1.5");
+	});
+});
+
+describe("ApiEmbeddingProvider · 瞬时错误重试", () => {
+	const config = {
+		baseURL: "https://embedding.example.com",
+		apiKey: "sk-test",
+		model: "m1",
+	};
+
+	const okResponse = () => ({
+		status: 200,
+		json: { data: [{ index: 0, embedding: [1, 0, 0] }] },
+		text: "",
+		headers: {},
+	});
+
+	const errorResponse = (status: number, headers: Record<string, string> = {}) => ({
+		status,
+		json: { error: { message: `status ${status}` } },
+		text: "",
+		headers,
+	});
+
+	afterEach(() => {
+		resetHttpClient();
+		vi.useRealTimers();
+	});
+
+	it("429 尊重 Retry-After 后重试并成功", async () => {
+		vi.useFakeTimers();
+		const request = vi.fn()
+			.mockResolvedValueOnce(errorResponse(429, { "Retry-After": "2" }))
+			.mockResolvedValueOnce(okResponse());
+		setHttpClient({ request });
+
+		const pending = new ApiEmbeddingProvider(config).embed(["hello"]);
+		await vi.advanceTimersByTimeAsync(1_999);
+		expect(request).toHaveBeenCalledTimes(1);
+		await vi.advanceTimersByTimeAsync(1);
+		await expect(pending).resolves.toEqual([[1, 0, 0]]);
+		expect(request).toHaveBeenCalledTimes(2);
+	});
+
+	it("网络错误可恢复，最多重试 5 次（总请求 6 次）", async () => {
+		vi.useFakeTimers();
+		const request = vi.fn()
+			.mockRejectedValueOnce(new Error("network down"))
+			.mockResolvedValueOnce(okResponse());
+		setHttpClient({ request });
+
+		const pending = new ApiEmbeddingProvider(config).embed(["hello"]);
+		await vi.runAllTimersAsync();
+		await expect(pending).resolves.toEqual([[1, 0, 0]]);
+		expect(request).toHaveBeenCalledTimes(2);
+	});
+
+	it("连续 5 次重试仍失败后抛错，不再继续请求", async () => {
+		vi.useFakeTimers();
+		const request = vi.fn().mockResolvedValue(errorResponse(503));
+		setHttpClient({ request });
+
+		const pending = new ApiEmbeddingProvider(config).embed(["hello"]);
+		const assertion = expect(pending).rejects.toThrow("HTTP 503");
+		await vi.runAllTimersAsync();
+		await assertion;
+		expect(request).toHaveBeenCalledTimes(6);
+	});
+
+	it("鉴权/参数类 4xx 不重试", async () => {
+		const request = vi.fn().mockResolvedValue(errorResponse(401));
+		setHttpClient({ request });
+
+		await expect(new ApiEmbeddingProvider(config).embed(["hello"])).rejects.toThrow("HTTP 401");
+		expect(request).toHaveBeenCalledTimes(1);
 	});
 });
 
