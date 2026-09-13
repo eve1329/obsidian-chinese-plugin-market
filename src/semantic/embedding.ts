@@ -237,20 +237,43 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 				embedding?: unknown;
 			}
 			const data = (response.json as { data?: EmbeddingDataItem[] | null })?.data;
-			if (!Array.isArray(data)) {
-				throw new Error("Embedding 响应格式异常（缺少 data 数组）");
+			if (!Array.isArray(data) || data.length !== batch.length) {
+				throw new Error(
+					`Embedding 响应格式异常（data 数量 ${Array.isArray(data) ? data.length : 0}，期望 ${batch.length}）`
+				);
+			}
+
+			const seen = new Set<number>();
+			const validated = data.map((item) => {
+				// 单条请求兼容少数省略 index 的 OpenAI 兼容实现；批量响应必须显式
+				// 提供唯一、连续的 index，否则无法证明向量与输入顺序对应。
+				const index = item?.index ?? (batch.length === 1 ? 0 : undefined);
+				if (
+					!Number.isInteger(index) ||
+					(index as number) < 0 ||
+					(index as number) >= batch.length ||
+					seen.has(index as number)
+				) {
+					throw new Error("Embedding 响应格式异常（index 缺失、越界或重复）");
+				}
+				seen.add(index as number);
+				const emb = item?.embedding;
+				if (
+					!Array.isArray(emb) ||
+					emb.length === 0 ||
+					emb.some((value) => typeof value !== "number" || !Number.isFinite(value))
+				) {
+					throw new Error("Embedding 响应缺少有效 embedding 向量");
+				}
+				return { index: index as number, embedding: emb as number[] };
+			});
+
+			if (seen.size !== batch.length) {
+				throw new Error("Embedding 响应格式异常（index 不完整）");
 			}
 			// 按 index 排序，保证与输入顺序一致
-			const sorted = [...data].sort(
-				(a, b) => (a?.index ?? 0) - (b?.index ?? 0)
-			);
-			return sorted.map((d) => {
-				const emb = d?.embedding;
-				if (!Array.isArray(emb)) {
-					throw new Error("Embedding 响应缺少 embedding 向量");
-				}
-				return emb as number[];
-			});
+			validated.sort((a, b) => a.index - b.index);
+			return validated.map((item) => item.embedding);
 		}
 	}
 

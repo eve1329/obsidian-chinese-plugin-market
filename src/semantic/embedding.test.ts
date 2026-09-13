@@ -472,6 +472,54 @@ describe("ApiEmbeddingProvider · 瞬时错误重试", () => {
 	});
 });
 
+describe("ApiEmbeddingProvider · 响应格式校验", () => {
+	const config = {
+		baseURL: "https://embedding.example.com",
+		apiKey: "sk-test",
+		model: "m1",
+	};
+
+	const response = (data: unknown) => ({
+		status: 200,
+		json: { data },
+		text: "",
+		headers: {},
+	});
+
+	afterEach(() => resetHttpClient());
+
+	it("data 数量与输入批次不一致时拒绝响应", async () => {
+		const request = vi.fn().mockResolvedValue(response([{ index: 0, embedding: [1, 0] }]));
+		setHttpClient({ request });
+
+		await expect(new ApiEmbeddingProvider(config).embed(["a", "b"])).rejects.toThrow("data 数量");
+	});
+
+	it("批量响应的 index 重复或越界时拒绝响应", async () => {
+		const request = vi.fn().mockResolvedValue(response([
+			{ index: 0, embedding: [1, 0] },
+			{ index: 0, embedding: [0, 1] },
+		]));
+		setHttpClient({ request });
+
+		await expect(new ApiEmbeddingProvider(config).embed(["a", "b"])).rejects.toThrow("index 缺失、越界或重复");
+	});
+
+	it("向量为空或含非有限数值时拒绝响应", async () => {
+		const request = vi.fn().mockResolvedValue(response([{ index: 0, embedding: [1, Number.NaN] }]));
+		setHttpClient({ request });
+
+		await expect(new ApiEmbeddingProvider(config).embed(["a"])).rejects.toThrow("有效 embedding 向量");
+	});
+
+	it("兼容单条响应省略 index 的实现", async () => {
+		const request = vi.fn().mockResolvedValue(response([{ embedding: [1, 0] }]));
+		setHttpClient({ request });
+
+		await expect(new ApiEmbeddingProvider(config).embed(["a"])).resolves.toEqual([[1, 0]]);
+	});
+});
+
 describe("向量索引落盘往返（Translator 层）", () => {
 	const sampleIndex: VectorIndex = {
 		ids: ["sync", "theme", "kanban"],
