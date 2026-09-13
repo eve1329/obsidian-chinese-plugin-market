@@ -7,9 +7,9 @@
  *   - 持久化防抖：每 100 次变更或 30s 空闲才整库导出写盘（sql.js 无增量写）。
  *
  * 表结构：
- *   plugins(id TEXT PRIMARY KEY, vec BLOB, category TEXT, tags TEXT)
- *     - vec 为 int8 量化 BLOB（scale+zero+int8[]，见 vec-codec.quantizeVec）
- *   meta(key TEXT PRIMARY KEY, value TEXT) —— 存 model / hash / schema 版本
+	 *   plugins(id TEXT PRIMARY KEY, vec BLOB, category TEXT, tags TEXT)
+	 *     - vec 为 int8 量化 BLOB（scale+zero+int8[]，见 vec-codec.quantizeVec）
+	 *   meta(key TEXT PRIMARY KEY, value TEXT) —— 存 model / embedding identity / fieldsHash / hash / schema 版本
  *
  * 定位：替代原先「整个 VectorIndex 存一份 JSON/二进制文件」的旧方式。
  * 对插件市场这种「写入低频（索引重建时）、读取频繁（搜索时）」的模式很合适。

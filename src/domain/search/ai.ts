@@ -20,6 +20,8 @@ import {
 	createEmbeddingProvider,
 	buildVectorIndex,
 	vectorRecallScores,
+	getEmbeddingIdentity,
+	DEFAULT_LOCAL_MODEL,
 	type EmbeddingProvider,
 	type VectorIndex,
 } from "@semantic/embedding";
@@ -638,7 +640,15 @@ export class AISearcher {
 		// 与 buildLocalIndex 用 localModel（bge）建的索引 model 不一致 → 每次搜索都
 		// needBuild=true → 全量重建 embed 几千条 → 慢。现统一为实际所用模型的 key，
 		// 使重启后加载的 SQLite 索引能正确复用（needBuild=false）。
-		const indexModel = embCfg.source === "local" ? embCfg.localModel : embCfg.model;
+		const indexModel = embCfg.source === "local"
+			? (embCfg.localModel || DEFAULT_LOCAL_MODEL)
+			: (embCfg.model || "");
+		const embeddingIdentity = getEmbeddingIdentity({
+			source: embCfg.source,
+			baseURL: embCfg.baseURL,
+			model: embCfg.model,
+			localModel: embCfg.localModel,
+		});
 
 		const indexPlugins = allPlugins.map((p) => {
 			const tag = this.pluginTags[p.id];
@@ -648,6 +658,7 @@ export class AISearcher {
 		const needBuild =
 			!this.vectorIndex ||
 			this.vectorIndex.model !== indexModel ||
+			this.vectorIndex.embeddingIdentity !== embeddingIdentity ||
 			this.vectorIndex.ids.length !== allPlugins.length ||
 			this.vectorIndex.categorySchemaVersion !== this.tagService.getSchemaVersion();
 
@@ -664,6 +675,7 @@ export class AISearcher {
 				prevIndex,
 				this.tagService.getSchemaVersion(),
 				precomputedFieldsHash,
+				embeddingIdentity,
 			)
 		);
 		this.vectorIndex = built;

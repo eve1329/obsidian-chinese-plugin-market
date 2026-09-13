@@ -4,6 +4,7 @@ import {
 	vectorRecall,
 	LocalEmbeddingProvider,
 	DEFAULT_LOCAL_MODEL,
+	getEmbeddingIdentity,
 	__clearQueryVecCacheForTest,
 	type EmbeddingProvider,
 	type VectorIndex,
@@ -98,6 +99,30 @@ describe("buildVectorIndex", () => {
 		expect(second).not.toBe(first);
 		expect(second.ids).toContain("new");
 		expect(provider.calls).toBe(2);
+	});
+
+	it("embedding 身份变化：同模型换 endpoint 也必须重建", async () => {
+		const provider = makeMockProvider({});
+		const identityA = getEmbeddingIdentity({ source: "api", baseURL: "https://a.example", model: "m1" });
+		const identityB = getEmbeddingIdentity({ source: "api", baseURL: "https://b.example", model: "m1" });
+		const first = await buildVectorIndex(provider, plugins, "m1", undefined, undefined, undefined, identityA);
+		const second = await buildVectorIndex(provider, plugins, "m1", first, undefined, undefined, identityB);
+		expect(second).not.toBe(first);
+		expect(second.embeddingIdentity).toBe(identityB);
+		expect(provider.calls).toBe(2);
+	});
+
+	it("旧持久化索引缺 fieldsHash：整体 hash 相同只回填指纹，不重新 embed", async () => {
+		const providerA = makeMockProvider({});
+		const built = await buildVectorIndex(providerA, plugins, "m1");
+		const persisted = { ...built };
+		delete persisted.fieldsHash;
+
+		const providerB = makeMockProvider({});
+		const reused = await buildVectorIndex(providerB, plugins, "m1", persisted);
+		expect(reused).toBe(persisted);
+		expect(providerB.calls).toBe(0);
+		expect(reused.fieldsHash).toBe(built.fieldsHash);
 	});
 });
 
@@ -247,6 +272,32 @@ describe("query 向量缓存 · 换模型不得复用旧向量（回归）", () 
 		// 同一 query、同一 provider.name，但索引模型不同：
 		// 若缓存键不含模型会命中 model-A 的 2 维向量去比 model-B 的 3 维索引，
 		// topKBySimilarity 按较短维度静默截断 → 不报错但排序错误。
+		await vectorRecall(provider, "q", idxB, 1);
+		expect(provider.calls).toBe(2);
+	});
+
+	it("同模型换 endpoint → query 缓存不命中，避免复用另一服务的向量", async () => {
+		const provider = makeDimChangingProvider();
+		const identityA = getEmbeddingIdentity({ source: "api", baseURL: "https://a.example", model: "model" });
+		const identityB = getEmbeddingIdentity({ source: "api", baseURL: "https://b.example", model: "model" });
+		const idxA: VectorIndex = {
+			ids: ["a"],
+			vectors: [[1, 0]],
+			hash: "h",
+			model: "model",
+			embeddingIdentity: identityA,
+		};
+		const idxB: VectorIndex = {
+			ids: ["a"],
+			vectors: [[1, 0, 0]],
+			hash: "h",
+			model: "model",
+			embeddingIdentity: identityB,
+		};
+
+		await vectorRecall(provider, "q", idxA, 1);
+		await vectorRecall(provider, "q", idxA, 1);
+		expect(provider.calls).toBe(1);
 		await vectorRecall(provider, "q", idxB, 1);
 		expect(provider.calls).toBe(2);
 	});

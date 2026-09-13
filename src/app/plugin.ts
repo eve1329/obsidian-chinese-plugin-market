@@ -30,7 +30,8 @@ import { makeT } from "@shared/i18n";
 import { setScrollDebug } from "@ui/view/view-render";
 import { TranslatorSettingTab } from "@app/settings-tab";
 import { debounce, mapWithConcurrency, contentHash, isAISearchUsable } from "@shared/utils";
-import { LocalEmbeddingProvider, buildVectorIndex, DEFAULT_LOCAL_MODEL, type EmbeddingProvider, type IndexPlugin } from "@semantic/embedding";
+import { computeIndexFingerprints } from "@shared/fingerprint";
+import { LocalEmbeddingProvider, buildVectorIndex, getEmbeddingIdentity, DEFAULT_LOCAL_MODEL, type EmbeddingProvider, type IndexPlugin } from "@semantic/embedding";
 import { setWorkerSourceLoader, setModelProgressReporter } from "@semantic/workers/worker-backend";
 import { ChinesePluginMarketView, ChinesePluginMarketSettings, DEFAULT_SETTINGS, getDefaultSettings, type PluginProfile } from "@ui/view/translator-view";
 import { refreshOutdated } from "@ui/view/view-data";
@@ -2155,11 +2156,32 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			logger.warn("[Chinese Plugin Market] 预建本地索引：暂无插件数据（需先打开插件市场视图加载列表）。");
 			return;
 		}
-		if (!force && this.translator.getVectorIndex()?.ids.length === plugins.length) return; // 幂等
-
 		const total = plugins.length;
 		let doneCount = 0; // 真实已 embed 计数（增量构建时为增量条目数，分母对齐 total）
 		const model = this.settings.embeddingLocalModel || DEFAULT_LOCAL_MODEL;
+		const indexPlugins: IndexPlugin[] = plugins.map((p) => {
+			const tag = this.translator.getAllPluginTags()[p.id];
+			return { id: p.id, name: p.name, description: p.description, category: tag?.category, tags: tag?.tags };
+		});
+		// 预建与搜索共用同一套失效条件：数量不变但描述/分类变化时也必须更新。
+		const schemaVer = this.translator.getCategorySchemaVersion();
+		const embeddingIdentity = getEmbeddingIdentity({
+			source: "local",
+			localModel: model,
+			localWasmPaths: this.settings.embeddingLocalWasmPaths || undefined,
+		});
+		const fieldsHash = computeIndexFingerprints(indexPlugins, (p) => p).fields;
+		const currentIndex = this.translator.getVectorIndex();
+		if (
+			!force &&
+			currentIndex &&
+			currentIndex.ids.length === plugins.length &&
+			currentIndex.model === model &&
+			currentIndex.embeddingIdentity === embeddingIdentity &&
+			currentIndex.categorySchemaVersion === schemaVer &&
+			currentIndex.fieldsHash === fieldsHash
+		) return;
+
 		this.localIndexState = { status: "building", progress: 0, total };
 		const done = (s: "done" | "error", error?: string) => {
 			this.localIndexState = {
@@ -2197,16 +2219,17 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				},
 			};
 
-			const indexPlugins: IndexPlugin[] = plugins.map((p) => {
-				const tag = this.translator.getAllPluginTags()[p.id];
-				return { id: p.id, name: p.name, description: p.description, category: tag?.category, tags: tag?.tags };
-			});
-			// categorySchemaVersion 必须与 vectorRecallScores 的 needBuild 判断一致
-			// （用 tagService.getSchemaVersion()），否则每次搜索都因版本不匹配而全量重建索引 → 慢。
-			const schemaVer = this.translator.getCategorySchemaVersion();
 			// 把当前索引作为 prevIndex 传入，启用增量 embed（只 embed 新增/内容变化的 id，
 			// 未变的复用旧向量），与 saveVectorIndex 的增量写盘配合，避免每次全量重建。
-			const index = await buildVectorIndex(provider, indexPlugins, model, this.translator.getVectorIndex(), schemaVer);
+			const index = await buildVectorIndex(
+				provider,
+				indexPlugins,
+				model,
+				this.translator.getVectorIndex(),
+				schemaVer,
+				fieldsHash,
+				embeddingIdentity,
+			);
 			this.translator.setVectorIndex(index);
 			await this.saveVectorIndex();
 			done("done");
@@ -2286,7 +2309,9 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 							perIdHash = undefined;
 						}
 					}
-					this.translator.setVectorIndex({ ids, vectors, hash, model, categorySchemaVersion: schema, perIdHash });
+					const embeddingIdentity = store.getMeta("embeddingIdentity") || undefined;
+					const fieldsHash = store.getMeta("fieldsHash") || undefined;
+					this.translator.setVectorIndex({ ids, vectors, hash, model, embeddingIdentity, categorySchemaVersion: schema, perIdHash, fieldsHash });
 					return;
 				}
 				// 空库：尝试从旧版文件一次性迁移
@@ -2353,6 +2378,10 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 			store.setMeta("model", index.model);
 			store.setMeta("hash", index.hash);
+			// 空字符串表示旧索引/未知身份；loadVectorIndex 会将其还原为 undefined，
+			// 让首次使用新版本时按当前来源与 endpoint 重建一次。
+			store.setMeta("embeddingIdentity", index.embeddingIdentity ?? "");
+			store.setMeta("fieldsHash", index.fieldsHash ?? "");
 			if (index.categorySchemaVersion) store.setMeta("categorySchemaVersion", index.categorySchemaVersion);
 			if (index.perIdHash) store.setMeta("perIdHash", JSON.stringify(index.perIdHash));
 			await store.flush();

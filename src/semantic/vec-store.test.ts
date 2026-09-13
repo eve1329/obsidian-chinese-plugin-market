@@ -65,6 +65,8 @@ describe("SqliteVectorStore", () => {
 		let s = await SqliteVectorStore.open(adapter, file, SQL as any);
 		s.replaceAll([{ id: "x", vec: [0.2, 0.8] }]);
 		s.setMeta("model", "m1");
+		s.setMeta("embeddingIdentity", "api|https://example.com|m1");
+		s.setMeta("fieldsHash", "f1");
 		await s.flush();
 		await s.dispose();
 
@@ -72,6 +74,8 @@ describe("SqliteVectorStore", () => {
 		const s2 = await SqliteVectorStore.open(adapter, file, SQL as any);
 		expect(s2.count()).toBe(1);
 		expect(s2.getMeta("model")).toBe("m1");
+		expect(s2.getMeta("embeddingIdentity")).toBe("api|https://example.com|m1");
+		expect(s2.getMeta("fieldsHash")).toBe("f1");
 		const vecs = s2.getAllVecs();
 		expect(vecs.size).toBe(1);
 		await s2.dispose();

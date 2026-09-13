@@ -112,6 +112,24 @@ export function createEmbeddingProvider(spec: EmbeddingProviderSpec): EmbeddingP
 }
 
 /**
+ * 生成 embedding 索引/查询缓存的身份标识。
+ *
+ * 模型名本身不足以标识向量空间：同名模型可能部署在不同的 API 服务上，
+ * API 与本地模式也可能恰好使用相同字符串作为模型名。API Key 不参与身份，
+ * 避免密钥进入缓存或持久化数据；密钥轮换不会改变向量空间。
+ */
+export function getEmbeddingIdentity(spec: EmbeddingProviderSpec): string {
+	const source = spec.source;
+	const model = source === "local"
+		? (spec.localModel || DEFAULT_LOCAL_MODEL)
+		: (spec.model || "");
+	const endpoint = source === "api"
+		? normalizeBaseUrl(spec.baseURL || "https://api.openai.com")
+		: "";
+	return `${source}|${endpoint}|${model}`;
+}
+
+/**
  * 基于 OpenAI 兼容 /v1/embeddings 的实现。
  * 请求/响应遵循 OpenAI 规范：
  *   POST {baseURL}/v1/embeddings  { model, input: string[] }
@@ -286,6 +304,8 @@ export interface VectorIndex {
 	hash: string;
 	/** 生成该索引的 embedding 模型名，模型变更时需重建。 */
 	model: string;
+	/** 生成该索引的来源/endpoint/model 身份，防止同名模型跨服务复用。 */
+	embeddingIdentity?: string;
 	/**
 	 * 分类体系版本号（用法 A 注入 category/tags 时）。
 	 * 当分类体系大改（重命名/合并 category）但恰好文本指纹未变时，
@@ -299,7 +319,7 @@ export interface VectorIndex {
 	 * 原始字段指纹（id+name+description+category+tags，不含 t2s 转换与文本拼装）。
 	 * 用于稳态搜索的「零成本复用判定」：fieldsHash 一致即代表文本拼装 + t2s 结果
 	 * 必然不变，可跳过全库文本拼装 / t2s / contentHash 直接复用（PERF-2）。
-	 * 仅存内存（不进 SQLite），冷启动后首次搜索回填一次即可。
+	 * 与 perIdHash 一样持久化到 SQLite；旧索引缺失时在整体 hash 相等分支回填。
 	 */
 	fieldsHash?: string;
 }
@@ -338,7 +358,8 @@ export async function buildVectorIndex(
 	model: string,
 	prevIndex?: VectorIndex | null,
 	categorySchemaVersion?: string,
-	precomputedFieldsHash?: string
+	precomputedFieldsHash?: string,
+	embeddingIdentity?: string
 ): Promise<VectorIndex> {
 	// 稳态快速短路：先对「原始字段」算轻量指纹（不做 t2s / 文本拼装 / perIdHash），
 	// 与 prevIndex.fieldsHash 一致即代表最终文本必然不变，直接复用整个索引（PERF-2）。
@@ -349,6 +370,7 @@ export async function buildVectorIndex(
 		prevIndex &&
 		prevIndex.fieldsHash === fieldsHash &&
 		prevIndex.model === model &&
+		prevIndex.embeddingIdentity === embeddingIdentity &&
 		prevIndex.categorySchemaVersion === categorySchemaVersion &&
 		prevIndex.ids.length === plugins.length
 	) {
@@ -382,11 +404,15 @@ export async function buildVectorIndex(
 		prevIndex &&
 		prevIndex.hash === hash &&
 		prevIndex.model === model &&
+		prevIndex.embeddingIdentity === embeddingIdentity &&
 		prevIndex.categorySchemaVersion === categorySchemaVersion &&
 		prevIndex.ids.length === plugins.length
 	) {
 		// 补齐 perIdHash（旧索引可能没有）
 		if (!prevIndex.perIdHash) prevIndex.perIdHash = perIdHash;
+		// SQLite 旧索引不保存 fieldsHash；整体 hash 已确认一致时回填，
+		// 避免冷启动后每次搜索重复做全库文本拼装 / t2s / 指纹计算。
+		if (prevIndex.fieldsHash !== fieldsHash) prevIndex.fieldsHash = fieldsHash;
 		return prevIndex;
 	}
 
@@ -395,6 +421,7 @@ export async function buildVectorIndex(
 	// 但 categorySchemaVersion 变化时强制全量重建（分类语义可能变了，即使文本 hash 未变，
 	// 注入分类的向量也应重建——否则分类知识变更无法生效）。
 	const schemaChanged = prevIndex?.categorySchemaVersion !== categorySchemaVersion;
+	const embeddingIdentityChanged = prevIndex?.embeddingIdentity !== embeddingIdentity;
 
 	const prevVecById = new Map<string, number[] | Float32Array>();
 	if (prevIndex) {
@@ -410,7 +437,13 @@ export async function buildVectorIndex(
 		const id = plugins[i].id;
 		const prev = prevVecById.get(id);
 		// 复用条件：有旧向量 + 模型一致 + 分类 schema 未变 + 该条 hash 未变
-		if (prev && !schemaChanged && prevIndex?.model === model && prevIndex?.perIdHash?.[id] === perIdHash[id]) {
+		if (
+			prev &&
+			!schemaChanged &&
+			!embeddingIdentityChanged &&
+			prevIndex?.model === model &&
+			prevIndex?.perIdHash?.[id] === perIdHash[id]
+		) {
 			vectors[i] = prev;
 		} else {
 			needEmbed.push(i);
@@ -431,6 +464,7 @@ export async function buildVectorIndex(
 		vectors,
 		hash,
 		model,
+		embeddingIdentity,
 		categorySchemaVersion,
 		perIdHash,
 		fieldsHash,
@@ -476,11 +510,16 @@ const QUERY_VEC_CACHE_MAX = 64;
  * 旧模型的向量；而 topKBySimilarity 对维度不一致是「按较短维度截断」的静默行为，
  * 不抛错、不告警，直接给出错误排序。
  *
- * 这里用 index.model（构建该索引时实际使用的模型 key）而非 provider 内部字段：
- * 索引与 query 必须落在同一向量空间，以索引的模型为准是最直接的不变量。
+ * 这里用 index.model 和 index.embeddingIdentity（构建该索引时的完整身份）而非
+ * provider 内部字段：索引与 query 必须落在同一向量空间，以索引身份为准是最直接的不变量。
  */
-function queryVecCacheKey(provider: EmbeddingProvider, model: string, query: string): string {
-	return `${provider.name}|${model}|${query}`;
+function queryVecCacheKey(
+	provider: EmbeddingProvider,
+	model: string,
+	query: string,
+	embeddingIdentity?: string,
+): string {
+	return `${provider.name}|${embeddingIdentity ?? ""}|${model}|${query}`;
 }
 
 function getCachedQueryVec(key: string): number[] | undefined {
@@ -521,9 +560,9 @@ export async function vectorRecallScores(
 ): Promise<Map<string, number> | null> {
 	if (!index.vectors.length) return null;
 	// query 同样转简体（与索引同空间）。PERF-9：命中缓存则跳过重复 embed（省一次 API 往返/推理）。
-	// 键含 index.model，保证换模型后不会复用旧模型的 query 向量（见 queryVecCacheKey）。
+	// 键含完整 embedding identity，保证换模型或 endpoint 后不会复用旧向量（见 queryVecCacheKey）。
 	const t2sQuery = t2sForEmbed(query);
-	const cacheKey = queryVecCacheKey(provider, index.model, t2sQuery);
+	const cacheKey = queryVecCacheKey(provider, index.model, t2sQuery, index.embeddingIdentity);
 	let queryVec = getCachedQueryVec(cacheKey);
 	if (!queryVec) {
 		const [vec] = await provider.embed([t2sQuery]);
