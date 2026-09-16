@@ -5,7 +5,7 @@ import { AISearcher, buildBm25Index, bm25RecallScores } from "@domain/search/ai"
 import { computeIndexFingerprints } from "@shared/fingerprint";
 import { bm25Score, tokenizeForBM25, BM25_K1, BM25_B } from "@domain/search/bm25";
 import { t2sForEmbed } from "@translation/lexicon/t2s";
-import { expandQuery } from "@translation/lexicon/synonyms";
+import { expandQueryTerms, findMatchedExactPhrases } from "@translation/lexicon/synonyms";
 import { PHASE } from "@domain/search/search-timing";
 import { logger } from "@shared/logger";
 import { LLMClient } from "@translation/api/api";
@@ -336,18 +336,26 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 
 	/**
 	 * 参考实现：逐条文档调用 bm25Score（即重构前 ai.ts 的做法）。
-	 * 与被测的倒排路径完全独立，用于证明「换索引结构不改分数」。
+	 * 与被测的倒排路径完全独立（文档侧不碰 postings/df/docLen 索引结构），
+	 * 用于证明「换索引结构不改分数」。
+	 *
+	 * query 侧权重必须与生产同源：`bm25RecallScores` 用 `expandQueryTerms`
+	 * （含泛词降权）。参考实现若仍用 `expandQuery`（全部权重 1），泛词降权一上线
+	 * 就会出现系统性偏差，把「索引结构是否等价」这个真正要验证的问题掩盖掉。
 	 */
 	function referenceScores(query: string): Map<string, number> {
-		const queryTokens = tokenizeForBM25(t2sForEmbed(expandQuery(query.trim())));
-		const out = new Map<string, number>();
-		if (queryTokens.length === 0) return out;
 		const qtf = new Map<string, number>();
-		for (const t of queryTokens) qtf.set(t, (qtf.get(t) ?? 0) + 1);
+		for (const { term, weight } of expandQueryTerms(query.trim())) {
+			for (const normalized of tokenizeForBM25(t2sForEmbed(term))) {
+				qtf.set(normalized, (qtf.get(normalized) ?? 0) + weight);
+			}
+		}
+		const out = new Map<string, number>();
+		if (qtf.size === 0) return out;
 		for (const p of CORPUS) {
 			const docTokens = tokenizeForBM25(t2sForEmbed(`${p.name} ${p.description}`));
 			const score = bm25Score(
-				queryTokens, docTokens, index.df, index.N, index.avgdl, BM25_K1, BM25_B, qtf
+				Array.from(qtf.keys()), docTokens, index.df, index.N, index.avgdl, BM25_K1, BM25_B, qtf
 			);
 			if (score > 0) out.set(p.id, score);
 		}
@@ -355,6 +363,13 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 	}
 
 	const QUERIES = ["笔记", "日历", "思维导图", "dataview", "模板 笔记", "笔记 同步", "zzz不存在", "", "   "];
+
+	it("前提：QUERIES 不命中精确短语表（否则参考实现需同步短语加权）", () => {
+		// 精确短语走独立的连续子串倒排（2.5×IDF），参考实现没有复刻这一段。
+		// 一旦有人把「笔记」「思维导图」这类词加进 PLUGIN_EXACT_PHRASES，这里会先失败
+		// 并给出明确提示，而不是让下面的逐位对拍出现难以定位的浮点差异。
+		for (const q of QUERIES) expect(findMatchedExactPhrases(q), `query="${q}"`).toEqual([]);
+	});
 
 	for (const query of QUERIES) {
 		it(`query="${query}" 命中集合与分数与参考实现一致`, () => {
@@ -369,7 +384,32 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 		});
 	}
 
-	it("手算基准：等长单 token 语料下得分应恰为 ln(2)", () => {
+	it("自然语言查询无限画布时优先召回包含该功能的插件", () => {
+		const corpus = [
+			{ id: "unrelated", name: "Canvas Board", description: "普通画布白板工具" },
+			{ id: "canvas", name: "Milanote-like", description: "类似 Milanote 的视觉工作区，提供无限画布、便签和链接" },
+			{ id: "whiteboard", name: "Whiteboard", description: "在虚拟白板上绘制和编辑内容" },
+		];
+		const index = buildBm25Index(corpus, computeIndexFingerprints(corpus).bm25);
+		const scores = bm25RecallScores("我想找一个无限画布相关的插件", index);
+		const ids = [...scores.keys()];
+		expect(ids).toContain("canvas");
+		expect(ids[0]).toBe("canvas");
+	});
+
+	it("精确短语只奖励连续命中，不把分散词误当成无限画布", () => {
+		const corpus = [
+			{ id: "generic", name: "Canvas Board", description: "普通画布工具" },
+			{ id: "split", name: "Split Canvas", description: "无限的白板和画布，可自由排列" },
+			{ id: "exact", name: "Milanote", description: "提供无限画布和便签的视觉工作区" },
+		];
+		const index = buildBm25Index(corpus, computeIndexFingerprints(corpus).bm25);
+		const ids = [...bm25RecallScores("我想找一个无限画布相关的插件", index).keys()];
+		expect(ids[0]).toBe("exact");
+		expect(ids.indexOf("exact")).toBeLessThan(ids.indexOf("split"));
+	});
+
+	it("手算基准：等长单 token 语料下得分应恰为 0.4×ln(2)", () => {
 		// 为什么需要这条：上面的「倒排 vs bm25Score」对拍**证明不了公式本身正确** ——
 		// bm25Score 现已改为调用 bm25Idf/bm25LenNorm/bm25TermWeight，与倒排路径共用同一批
 		// 原语，原语若有公式错误，两边会一起错、对拍照样通过。
@@ -378,7 +418,8 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 		//   N = 2, avgdl = 1  → 长度归一分母 = 1 - 0.75 + 0.75 × (1/1) = 1
 		//   df("笔记") = 1    → IDF = ln((2-1+0.5)/(1+0.5) + 1) = ln 2
 		//   tf = 1, k1 = 1.5  → termWeight = 1×2.5 / (1 + 1.5×1) = 1
-		//   ⇒ score = 1 × ln2 × 1 = ln 2
+		//   query 权重 = 0.4  → 「笔记」是高风险泛词，权重表把它封顶到 0.4
+		//   ⇒ score = 0.4 × ln2 × 1
 		// 期望值由公式推导得出、不来自生产代码，因此能发现原语自身的公式错误。
 		const corpus = [
 			{ id: "e0", name: "A", description: "" },
@@ -387,7 +428,7 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 		const handIndex = buildBm25Index(corpus, computeIndexFingerprints(corpus).bm25);
 		const scores = bm25RecallScores("笔记", handIndex);
 
-		expect(scores.get("e1")).toBe(Math.LN2);
+		expect(scores.get("e1")).toBe(0.4 * Math.LN2);
 		expect(scores.has("e0")).toBe(false);
 	});
 
@@ -401,7 +442,9 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 		//   IDF = ln((2-2+0.5)/(2+0.5) + 1) = ln(1.2)
 		//   d0: lenNorm = 1-0.75+0.75×(1/2) = 0.625 → termWeight = 1×2.5/(1+1.5×0.625)
 		//   d1: lenNorm = 1-0.75+0.75×(3/2) = 1.375 → termWeight = 2×2.5/(2+1.5×1.375)
-		// 期望值把 k1=1.5、b=0.75 硬编码在表达式里：改动这两个常量会让断言失败。
+		//   query 权重 = 0.4（「笔记」是高风险泛词）
+		// 期望值把 k1=1.5、b=0.75 与泛词权重 0.4 都硬编码在表达式里：
+		// 改动这些常量会让断言失败。
 		const corpus = [
 			{ id: "d0", name: "笔记", description: "" },
 			{ id: "d1", name: "甲", description: "笔记 笔记" },
@@ -409,7 +452,7 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 		const handIndex = buildBm25Index(corpus, computeIndexFingerprints(corpus).bm25);
 		const scores = bm25RecallScores("笔记", handIndex);
 
-		const idf = Math.log(1.2);
+		const idf = 0.4 * Math.log(1.2);
 		expect(scores.get("d0")).toBeCloseTo(idf * (2.5 / (1 + 1.5 * 0.625)), 12);
 		expect(scores.get("d1")).toBeCloseTo(idf * (5 / (2 + 1.5 * 1.375)), 12);
 		// 短文档命中 1 次应高于长文档命中 2 次（长度归一化生效）
@@ -468,5 +511,95 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 		expect(searcher.getBm25Index(CORPUS, sig)).toBe(a);
 		// 与不传预计算指纹时的结果一致（签名语义相同）
 		expect(searcher.getBm25Index(CORPUS)).toBe(a);
+	});
+
+	/** 用生产 BM25 路径跑一个小语料，返回按分数降序的插件 id。 */
+	function recallIds(corpus: { id: string; name: string; description: string }[], query: string): string[] {
+		const idx = buildBm25Index(corpus, computeIndexFingerprints(corpus).bm25);
+		return [...bm25RecallScores(query, idx).keys()];
+	}
+
+	it("「卡片盒」能召回 zettelkasten 类插件（修复前是 0 命中）", () => {
+		const corpus = [
+			{ id: "zettelkasten-core", name: "Zettelkasten Core", description: "卡片盒笔记法：原子笔记与永久笔记" },
+			{ id: "note-sync", name: "Note Sync", description: "同步你的笔记" },
+		];
+		const ids = recallIds(corpus, "卡片盒");
+		expect(ids[0]).toBe("zettelkasten-core");
+		expect(ids).toContain("zettelkasten-core");
+	});
+
+	it("精确概念不会被泛词拖成全库召回（双链笔记 vs 普通笔记插件）", () => {
+		const corpus = [
+			{ id: "wikilink-pro", name: "Wikilink Pro", description: "双链笔记与反向链接管理" },
+			...Array.from({ length: 40 }, (_, i) => ({
+				id: `note-${i}`,
+				name: `Note ${i}`,
+				description: "普通笔记插件，用于记录笔记",
+			})),
+		];
+		const ids = recallIds(corpus, "双链笔记");
+		expect(ids[0]).toBe("wikilink-pro");
+		// 旧实现会把「笔记」也扩展成 note/notes/obsidian，40 条普通笔记插件全部进候选
+		expect(ids.length).toBeLessThan(10);
+	});
+
+	it("「时间线」不被时钟/计时器类插件污染（时间 是高风险泛词）", () => {
+		const corpus = [
+			{ id: "timeline", name: "Timeline", description: "时间线视图，按时间排列笔记" },
+			{ id: "clock", name: "Status Bar Clock", description: "在状态栏显示时钟" },
+			{ id: "timer", name: "Pomodoro Timer", description: "番茄计时器" },
+			{ id: "datepicker", name: "Datepicker", description: "日期选择器" },
+		];
+		const ids = recallIds(corpus, "时间线");
+		expect(ids[0]).toBe("timeline");
+		// 「时间线」命中后跳过子词「时间」，否则 time/clock/timer 会把候选池污染掉
+		expect(ids).not.toContain("clock");
+		expect(ids).not.toContain("timer");
+		expect(ids).not.toContain("datepicker");
+	});
+
+	it("「PDF 标注」不会召回 badge/callout 这类非 PDF 标注插件", () => {
+		const corpus = [
+			{ id: "pdf-anno", name: "PDF Annotation", description: "PDF 标注与批注" },
+			{ id: "badges", name: "Badges", description: "给笔记加上角标徽章" },
+			{ id: "calloutx", name: "CalloutX", description: "自定义 callout 标注样式" },
+		];
+		const ids = recallIds(corpus, "PDF 标注");
+		expect(ids[0]).toBe("pdf-anno");
+		// 旧实现下「标注」会扩展出 highlight/badge，把徽章、callout 插件一起召回
+		expect(ids).not.toContain("badges");
+		expect(ids).not.toContain("calloutx");
+	});
+
+	it("「本地 AI」优先召回本地推理插件，而不是通用 AI 写作插件", () => {
+		const corpus = [
+			{ id: "ollama", name: "Ollama", description: "本地 LLM 推理" },
+			{ id: "local-llm", name: "Local LLM", description: "接入本地 LLM 服务" },
+			{ id: "ai-writer", name: "AI Writer", description: "AI 写作助手" },
+		];
+		const ids = recallIds(corpus, "本地 AI");
+		// ai 是高风险泛词，必须被本地/模型类锚点压过，否则结果会被 AI 写作插件占满
+		expect(ids.indexOf("ollama")).toBeLessThan(ids.indexOf("ai-writer"));
+		expect(ids.indexOf("local-llm")).toBeLessThan(ids.indexOf("ai-writer"));
+	});
+
+	it("短语倒排表补上 CJK 三元组盲区：中文查询能命中中文原文的不同措辞", () => {
+		// 「PDF 标注」按三元组分词只匹配到原文里连写的「pdf标注」，
+		// 而真阳性插件大多写的是「PDF 注释」「pdf annotation」。短语组把两种措辞绑在一起，
+		// 靠连续子串命中 —— 这是本轮把「PDF 标注」precision@10 从 2/10 提到 7/10 的机制。
+		const corpus = [
+			{ id: "pdf-printer", name: "PDF Printer", description: "打印 PDF 文件" },
+			{ id: "annotator", name: "Annotator", description: "PDF 注释工具，支持高亮与批注" },
+		];
+		expect(recallIds(corpus, "PDF 标注")[0]).toBe("annotator");
+	});
+
+	it("「AI 写作」靠「写作助手」短语锚点与普通写作插件区分开", () => {
+		const corpus = [
+			{ id: "writing", name: "Writing", description: "写作目标与写作习惯追踪" },
+			{ id: "ai-helper", name: "AI Helper", description: "人工智能写作助手" },
+		];
+		expect(recallIds(corpus, "AI 写作")[0]).toBe("ai-helper");
 	});
 });

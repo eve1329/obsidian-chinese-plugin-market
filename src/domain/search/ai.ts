@@ -15,7 +15,12 @@ import { computeIndexFingerprints } from "@shared/fingerprint";
 import { logger } from "@shared/logger";
 import { tokenizeForBM25, bm25Idf, bm25LenNorm, bm25TermWeight } from "@domain/search/bm25";
 import { t2sForEmbed } from "@translation/lexicon/t2s";
-import { expandQuery } from "@translation/lexicon/synonyms";
+import {
+	expandQuery,
+	expandQueryTerms,
+	findMatchedExactPhrases,
+	PLUGIN_EXACT_PHRASES,
+} from "@translation/lexicon/synonyms";
 import {
 	createEmbeddingProvider,
 	buildVectorIndex,
@@ -117,6 +122,10 @@ export interface Bm25Index {
 	postings: Map<string, { idx: number[]; tf: number[] }>;
 	/** term → 文档频率（出现在多少个文档中） */
 	df: Map<string, number>;
+	/** 精确短语 → 倒排表；只收录词表中的短语连续命中 */
+	phrasePostings?: Map<string, { idx: number[]; tf: number[] }>;
+	/** 精确短语 → 文档频率 */
+	phraseDf?: Map<string, number>;
 	N: number;
 	avgdl: number;
 	/** 失效签名：全部 id/name/description 的内容指纹，任一字段变化即重建 */
@@ -138,14 +147,33 @@ export function buildBm25Index(
 	const docLen: number[] = [];
 	const postings = new Map<string, { idx: number[]; tf: number[] }>();
 	const df = new Map<string, number>();
+	const phrasePostings = new Map<string, { idx: number[]; tf: number[] }>();
+	const phraseDf = new Map<string, number>();
 	let totalLen = 0;
+	const exactPhrases = Array.from(
+		new Set(Object.values(PLUGIN_EXACT_PHRASES).flat().map((phrase) => t2sForEmbed(phrase).toLowerCase()))
+	).filter((phrase) => phrase.length > 0);
 
 	for (let di = 0; di < allPlugins.length; di++) {
 		const p = allPlugins[di];
 		ids.push(p.id);
-		const tokens = tokenizeForBM25(t2sForEmbed(`${p.name} ${p.description}`));
+		const searchableText = t2sForEmbed(`${p.name} ${p.description}`).toLowerCase();
+		const tokens = tokenizeForBM25(searchableText);
 		docLen.push(tokens.length);
 		totalLen += tokens.length;
+
+		for (const phrase of exactPhrases) {
+			const tf = countPhraseOccurrences(searchableText, phrase);
+			if (tf === 0) continue;
+			let pl = phrasePostings.get(phrase);
+			if (!pl) {
+				pl = { idx: [], tf: [] };
+				phrasePostings.set(phrase, pl);
+			}
+			pl.idx.push(di);
+			pl.tf.push(tf);
+			phraseDf.set(phrase, (phraseDf.get(phrase) ?? 0) + 1);
+		}
 
 		// 单文档词频只在建索引时算一次（替代旧实现「每次查询 × 每条文档」重建 Map）
 		const localTf = new Map<string, number>();
@@ -164,7 +192,23 @@ export function buildBm25Index(
 
 	const N = allPlugins.length;
 	const avgdl = N > 0 ? totalLen / N : 0;
-	return { ids, docLen, postings, df, N, avgdl, sig };
+	return { ids, docLen, postings, df, phrasePostings, phraseDf, N, avgdl, sig };
+}
+
+/** 统计连续短语出现次数；支持重叠出现，且不把两个分散词当作短语命中。 */
+function countPhraseOccurrences(text: string, phrase: string): number {
+	let count = 0;
+	let from = 0;
+	const asciiPhrase = /^[a-z0-9 _-]+$/i.test(phrase);
+	while (from <= text.length - phrase.length) {
+		const at = text.indexOf(phrase, from);
+		if (at < 0) break;
+		const before = at > 0 ? text[at - 1] : "";
+		const after = text[at + phrase.length] ?? "";
+		if (!asciiPhrase || (!/[a-z0-9]/i.test(before) && !/[a-z0-9]/i.test(after))) count++;
+		from = at + 1;
+	}
+	return count;
 }
 
 /**
@@ -183,17 +227,22 @@ export function bm25RecallScores(
 	index: Bm25Index,
 	topK = Number.MAX_SAFE_INTEGER
 ): Map<string, number> {
-	// 同义词扩展：中文口语 → 英文别名（如"思维导图"→"mind map"），再 t2s 统一简体
-	const expanded = expandQuery(query.trim());
-	const q = t2sForEmbed(expanded);
-	const queryTokens = tokenizeForBM25(q);
-	if (queryTokens.length === 0) return new Map();
-
-	// query term 频次（叠词加权）。只依赖 query，与文档无关，故算一次。
+	// query term 频次（含词表泛词降权）。只依赖 query，与文档无关，故算一次。
+	const queryTerms = expandQueryTerms(query.trim());
+	if (queryTerms.length === 0) return new Map();
 	const qtf = new Map<string, number>();
-	for (const t of queryTokens) qtf.set(t, (qtf.get(t) ?? 0) + 1);
+	for (const { term, weight } of queryTerms) {
+		const token = t2sForEmbed(term);
+		// expandQueryTerms 已按 BM25 token 产出；这里仅做简繁归一，避免
+		// 词表模块和文档索引在传统字形上的分词空间不一致。
+		for (const normalized of tokenizeForBM25(token)) {
+			qtf.set(normalized, (qtf.get(normalized) ?? 0) + weight);
+		}
+	}
 
 	const { postings, df, N, avgdl, ids, docLen } = index;
+	const phrasePostings = index.phrasePostings ?? new Map<string, { idx: number[]; tf: number[] }>();
+	const phraseDf = index.phraseDf ?? new Map<string, number>();
 	const acc = new Map<number, number>(); // docIdx → 累计分
 	for (const [term, qtfCount] of qtf) {
 		const pl = postings.get(term);
@@ -206,6 +255,19 @@ export function bm25RecallScores(
 			const d = pIdx[k];
 			const lenNorm = bm25LenNorm(docLen[d], avgdl);
 			acc.set(d, (acc.get(d) ?? 0) + w * bm25TermWeight(pTf[k], lenNorm));
+		}
+	}
+
+	// 精确短语单独走连续子串倒排。权重高于普通 term，但不影响裸泛词的召回。
+	for (const phrase of findMatchedExactPhrases(query.trim())) {
+		const normalized = t2sForEmbed(phrase).toLowerCase();
+		const pl = phrasePostings.get(normalized);
+		if (!pl) continue;
+		const w = 2.5 * bm25Idf(phraseDf.get(normalized) ?? 0, N);
+		for (let k = 0; k < pl.idx.length; k++) {
+			const d = pl.idx[k];
+			const lenNorm = bm25LenNorm(docLen[d], avgdl);
+			acc.set(d, (acc.get(d) ?? 0) + w * bm25TermWeight(pl.tf[k], lenNorm));
 		}
 	}
 
