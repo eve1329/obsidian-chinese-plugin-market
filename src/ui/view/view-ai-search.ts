@@ -12,6 +12,29 @@ import { logger } from "@shared/logger";
 import { isAISearchUsable } from "@shared/utils";
 import type { ViewContext } from "@ui/view/view-context";
 
+/**
+ * 构造语义检索语料：保留原始英文，并把当前可用的中文译名/译文作为独立字段
+ * 传给向量索引。索引层负责统一拼接顺序，避免搜索入口与后台预建各自拼接出
+ * 不同的内容指纹；original 兜底结果不重复注入。
+ */
+export function buildSemanticSearchPlugins(
+	plugins: Array<{ id: string; name: string; description: string }>,
+	translatedResults: Record<string, { translatedName?: string; translatedDesc?: string } | undefined>,
+): Array<{ id: string; name: string; description: string; nameZh?: string; descZh?: string }> {
+	return plugins.map((p) => {
+		const translation = translatedResults[p.id];
+		const translatedName = translation?.translatedName?.trim();
+		const translatedDesc = translation?.translatedDesc?.trim();
+		return {
+			id: p.id,
+			name: p.name,
+			description: p.description,
+			nameZh: translatedName && translatedName !== p.name ? translatedName : undefined,
+			descZh: translatedDesc && translatedDesc !== p.description ? translatedDesc : undefined,
+		};
+	});
+}
+
 /** 根据 Base URL 判断是否国内模型（直连可达，无需 VPN） */
 function isCnModelBaseUrl(base: string): boolean {
 	return /siliconflow|deepseek|aliyun|dashscope|volcengine|moonshot|zhipu|baidu|tencent|chatglm|qwen|kimi|163\.com|baike/i.test(
@@ -69,19 +92,7 @@ export async function runAISearch(
 	let modelBarTimer = 0;
 
 	try {
-		const pluginArgs = ctx.plugins.map((p) => {
-			// 双语索引：把已缓存的中文译文一并送入向量索引（中文 query 的主对齐面）；
-			// original 兜底译文不算（等于没有译文）。译文后续更新会经指纹触发增量重 embed。
-			const tr = ctx.translator.cache?.[p.id];
-			const hasTr = tr && tr.source !== "original";
-			return {
-				id: p.id,
-				name: p.name,
-				description: p.description,
-				nameZh: hasTr ? tr.translatedName : undefined,
-				descZh: hasTr ? tr.translatedDesc : undefined,
-			};
-		});
+		const pluginArgs = buildSemanticSearchPlugins(ctx.plugins, ctx.translatedResults);
 		const config = {
 			baseURL: settings.aiSearchBaseURL,
 			apiKey: settings.aiSearchApiKey,
