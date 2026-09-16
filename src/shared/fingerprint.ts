@@ -23,6 +23,9 @@ export interface FingerprintInput {
 	id: string;
 	name: string;
 	description: string;
+	/** 可选中文译文只参与向量索引指纹；BM25 仍只依赖原始名称/描述。 */
+	nameZh?: string;
+	descZh?: string;
 }
 
 /** 分类/标签信息 */
@@ -89,6 +92,23 @@ export function computeIndexFingerprints<T extends FingerprintInput>(
 		// BM25 链到此为止；fields 链继续吸收分类维度
 		bm25 = (bm25 * 33 + ITEM_SEP) | 0;
 		fields = (fields * 33 + FIELD_SEP) | 0;
+
+		// 双语向量索引把中文译文也写入 embedding 文本，因此译文更新必须使
+		// fields 指纹失效；BM25 没有索引译文，故其签名不吸收这两个字段。
+		// 未提供译文字段时保持旧 fields 签名，便于复用已有索引与旧测试基线。
+		if (item.nameZh !== undefined || item.descZh !== undefined) {
+			const nameZh = item.nameZh ?? "";
+			for (let i = 0; i < nameZh.length; i++) {
+				fields = (fields * 33 + nameZh.charCodeAt(i)) | 0;
+			}
+			fields = (fields * 33 + FIELD_SEP) | 0;
+
+			const descZh = item.descZh ?? "";
+			for (let i = 0; i < descZh.length; i++) {
+				fields = (fields * 33 + descZh.charCodeAt(i)) | 0;
+			}
+			fields = (fields * 33 + FIELD_SEP) | 0;
+		}
 
 		const tagInfo = tagsOf?.(item);
 		const category = tagInfo?.category ?? "";
