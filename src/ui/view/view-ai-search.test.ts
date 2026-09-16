@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Notice } from "obsidian";
+import { Notice, Platform } from "obsidian";
 import { makeMockContext, makeMockPlugin } from "@shared/test-utils";
 import { buildSemanticSearchPlugins, runAISearch } from "@ui/view/view-ai-search";
 import type { ViewContext } from "@ui/view/view-context";
@@ -46,8 +46,10 @@ vi.mock("obsidian", async () => {
 		lastAiSearchResult: null,
 		lastAiSearchQuery: "",
 		selectedCategories: [],
+		filterCache: { reset: vi.fn() } as any,
 		ensureDataLoaded: vi.fn().mockResolvedValue(true),
 		renderPluginList: vi.fn(),
+		scheduleRender: vi.fn(),
 		showAIConfigGuide: vi.fn(),
 	} as any) as ViewContext;
 	return { ctx, settings, plugin, translator, searchInput, aiBadge };
@@ -191,5 +193,21 @@ describe("runAISearch (P2-1: 从 view-data 拆离 AI 搜索编排)", () => {
 		expect(field.createDiv).toHaveBeenCalled();
 		expect(translator.aiSearchLocal).toHaveBeenCalled();
 		expect(ctx.aiSearchResult).toEqual({ rankedIds: ["a", "b"] });
+	});
+
+	it("移动端误触发本地模式时回退关键词，不调用本地模型", async () => {
+		const previous = Platform.isMobile;
+		Platform.isMobile = true;
+		try {
+			const { ctx, translator, searchInput, aiBadge } = mkCtx({ embeddingSource: "local" });
+			ctx.searchMode = "local";
+			ctx.plugins = [{ id: "a", name: "A", description: "d" } as any];
+			translator.aiSearchLocal = vi.fn();
+			await runAISearch(ctx, searchInput, aiBadge);
+			expect(translator.aiSearchLocal).not.toHaveBeenCalled();
+			expect(ctx.searchMode).toBe("keyword");
+		} finally {
+			Platform.isMobile = previous;
+		}
 	});
 });

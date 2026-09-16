@@ -6,7 +6,7 @@
  * 视图本身由 translator-view.ts 的 ChinesePluginMarketView 承载。
  */
 
-import { Plugin, Notice, Menu, TFile, Platform, normalizePath, type App } from "obsidian";
+import { Plugin, Notice, Menu, TFile, normalizePath, type App } from "obsidian";
 
 /** Obsidian App 在 types 中未暴露、但运行时存在的辅助方法 */
 interface AppWithDefaultApp extends App {
@@ -28,6 +28,7 @@ import {
 } from "@app/obsidian-adapters";
 import { makeT } from "@shared/i18n";
 import { setScrollDebug } from "@ui/view/view-render";
+import { isMobileEnvironment } from "@shared/platform";
 import { TranslatorSettingTab } from "@app/settings-tab";
 import { debounce, mapWithConcurrency, contentHash, isAISearchUsable } from "@shared/utils";
 import { computeIndexFingerprints } from "@shared/fingerprint";
@@ -901,7 +902,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	 * 使视图用最终数据呈现（消除「重启后短暂英文、随后跳变中文」的闪烁）。
 	 */
 	private async initDeferredLoad() {
-		// 预热本地 embedding（local 模式）：提前启动 worker + 加载 bge 模型（~110MB），
+		// 预热本地 embedding（桌面端 local 模式）：提前启动 worker + 加载 e5 模型，
 		// 让首次本地语义搜索免冷启动。放在延迟初始化最前面（本方法已在 onLayoutReady 后
 		// 执行，Worker 创建时序已安全），使模型下载与下方 scanVaultTM / loadVectorIndex
 		// 的重 IO 并行，而非等它们串行完成后再开始——缩短首次搜索的实际等待。
@@ -1318,24 +1319,16 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				this.settings.embeddingLocalModel = DEFAULT_LOCAL_MODEL;
 			}
 		}
-		// embeddingSource 默认值迁移：旧默认是 "keyword"（无本地向量），新默认是
-		// "local"（vault-curate 同款，默认走本地 bge 向量）。已有用户存了 "keyword" 时
-		// 自动迁移到 "local"，让本地语义/本地向量能力真正生效。
-		if (this.settings.embeddingSource === "keyword") {
+		// embeddingSource 默认值迁移：桌面端旧默认是 "keyword"，升级后迁移到
+		// "local" 以启用本地语义。移动端明确保留/归一为 keyword，避免旧配置触发
+		// 本地模型下载；API 模式仍按用户配置保留。
+		if (!isMobileEnvironment() && this.settings.embeddingSource === "keyword") {
 			this.settings.embeddingSource = "local";
 		}
-		// #6: 移动端语义搜索降级。上面 keyword→local 的迁移只针对「曾存储 keyword 的桌面老用户」，
-		// 会把本地向量能力打开；但移动端全新安装（data 里根本没有 embeddingSource 键）应默认
-		// "keyword"（零 WASM），避免 26MB WASM 弱网下载慢 + 模型推理吃内存拖垮 Obsidian。
-		// 判定条件：移动端 && data 未显式存过 embeddingSource（即用户从未主动选择过）。
-		if (!("embeddingSource" in data)) {
-			let isMobile = false;
-			try {
-				isMobile = typeof Platform !== "undefined" && Platform.isMobile === true;
-			} catch {
-				isMobile = false;
-			}
-			if (isMobile) this.settings.embeddingSource = "keyword";
+		// 移动端不支持本地语义：不仅新安装默认 keyword，已有 local 配置也必须
+		// 归一为 keyword，防止升级后自动预热/搜索路径下载模型。
+		if (isMobileEnvironment() && this.settings.embeddingSource === "local") {
+			this.settings.embeddingSource = "keyword";
 		}
 	}
 
@@ -2250,10 +2243,11 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 	/**
 	 * 预热本地 embedding worker（对齐 vault-curate 的 warmup）：
-	 * 提前启动 worker + 加载 bge 模型，让首次本地语义搜索免于冷启动等待。
+	 * 提前启动 worker + 加载 e5 模型，让首次本地语义搜索免于冷启动等待。
 	 * 后台 fire-and-forget，失败静默；幂等（同会话只预热一次）。
 	 */
 	warmupLocalEmbedding(): void {
+		if (isMobileEnvironment()) return;
 		if (this.localWarmupDone) return;
 		this.localWarmupDone = true;
 		const model = this.settings.embeddingLocalModel || DEFAULT_LOCAL_MODEL;
@@ -2290,7 +2284,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	 *  其余复用旧向量）；no-op 时 fieldsHash 快路零 embed、UI 无感。仅 local 模式生效。 */
 	private indexRefreshTimer: number | null = null;
 	scheduleIndexRefresh(reason: string): void {
-		if (this.settings.embeddingSource !== "local") return;
+		if (isMobileEnvironment() || this.settings.embeddingSource !== "local") return;
 		if (this.indexRefreshTimer !== null) window.clearTimeout(this.indexRefreshTimer);
 		this.indexRefreshTimer = window.setTimeout(() => {
 			this.indexRefreshTimer = null;
@@ -2303,11 +2297,12 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	/**
 	 * 后台预建本地向量索引（A+B：设置页手动 / 数据就绪后自动共用）。
 	 *
-	 * 用本地 bge 模型对当前插件列表 embed → 构建 VectorIndex（含分类注入）→
+	 * 用本地 e5 模型对当前插件列表 embed → 构建 VectorIndex（含分类注入）→
 	 * 写入 SQLite。已构建则直接返回（幂等）。正在构建时并发调用复用同一次。
 	 * 进度写到 this.localIndexState，供设置页/视图轮询展示。
 	 */
 	async buildLocalIndex(force = false): Promise<void> {
+		if (isMobileEnvironment()) return;
 		// 并发去重：复用同一次构建的 Promise，让重复调用等待结果而非直接 return（#26）
 		if (this.localIndexState.status === "building" && this.buildLocalIndexPromise) {
 			return this.buildLocalIndexPromise;

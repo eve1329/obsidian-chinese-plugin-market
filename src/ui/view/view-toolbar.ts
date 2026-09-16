@@ -18,6 +18,7 @@ import { type SortBy } from "@domain/filter/sort";
 import type { ViewContext } from "@ui/view/view-context";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 import { refreshOutdated } from "@ui/view/view-data";
+import { isMobileEnvironment } from "@shared/platform";
 
 /**
  * 跨工具栏构建块与 loadAndRender 尾部共享的可变状态。
@@ -50,6 +51,14 @@ export function alignFacetLabels(scope: HTMLElement) {
 
 export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInput: HTMLInputElement } {
 	const container = ctx.contentEl;
+	const isMobile = isMobileEnvironment();
+	// 移动端不提供本地语义模式；视图状态若因旧会话残留 local，也立即回到关键词。
+	if (isMobile && ctx.searchMode === "local") {
+		ctx.searchMode = "keyword";
+		ctx.aiSearchResult = null;
+		ctx.aiSearchQueryCache = "";
+		ctx.filterCache.reset();
+	}
 		const header = container.createDiv({ cls: "pt-header" });
 
 		// ── 单行头部：搜索框(flex:1) + 模式下拉 + ⚙折叠 + ↻刷新 ──
@@ -67,7 +76,8 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 	const modeSelect = modeWrap.createEl("select", { cls: "pt-mode-select pt-search-mode" });
 	modeSelect.setAttribute("aria-label", "搜索模式");
 	modeSelect.setAttribute("title", "切换搜索模式：关键词 / AI 语义");
-	for (const mode of SEARCH_MODES) {
+	const availableModes = isMobile ? SEARCH_MODES.filter((mode) => mode.id !== "local") : SEARCH_MODES;
+	for (const mode of availableModes) {
 		const opt = modeSelect.createEl("option", { text: ctx.t(mode.label) });
 		opt.value = mode.id;
 	}

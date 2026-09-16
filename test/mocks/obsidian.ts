@@ -32,3 +32,10 @@ export function normalizePath(p: string): string {
 }
 export type App = unknown;
 export type WorkspaceLeaf = unknown;
+
+/** 可变平台标记，供移动端分支单测覆盖。 */
+export const Platform = {
+	isMobile: false,
+	isDesktopApp: true,
+	isMacOS: false,
+};

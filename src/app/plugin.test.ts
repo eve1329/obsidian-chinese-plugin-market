@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { Platform } from "obsidian";
 import ChinesePluginMarketPlugin from "@app/plugin";
 import { Translator } from "@domain/catalog/translator";
 
@@ -82,6 +83,39 @@ describe("Plugin 持久化契约（P0 回归）", () => {
 		};
 		await (plugin as any).loadSettings(allData2);
 		expect(plugin.settings.embeddingLocalModel).toBe("Xenova/custom-model");
+	});
+
+	it("移动端禁用本地 embedding：新安装、旧 keyword/local 配置都归一为 keyword", async () => {
+		const { plugin } = makePlugin();
+		const previous = Platform.isMobile;
+		Platform.isMobile = true;
+		try {
+			await (plugin as any).loadSettings({});
+			expect(plugin.settings.embeddingSource).toBe("keyword");
+
+			await (plugin as any).loadSettings({ embeddingSource: "keyword" });
+			expect(plugin.settings.embeddingSource).toBe("keyword");
+
+			await (plugin as any).loadSettings({ embeddingSource: "local" });
+			expect(plugin.settings.embeddingSource).toBe("keyword");
+		} finally {
+			Platform.isMobile = previous;
+		}
+	});
+
+	it("移动端本地模型入口直接短路：不预热 worker、不构建向量索引", async () => {
+		const { plugin } = makePlugin();
+		const previous = Platform.isMobile;
+		Platform.isMobile = true;
+		try {
+			(plugin as any).settings.embeddingSource = "local";
+			(plugin as any).warmupLocalEmbedding();
+			await (plugin as any).buildLocalIndex();
+			expect((plugin as any).localWarmupDone).toBe(false);
+			expect((plugin as any).localIndexState.status).toBe("idle");
+		} finally {
+			Platform.isMobile = previous;
+		}
 	});
 
 	it("收藏筛选（favoriteFilter）改为会话级：不再持久化进 settings", async () => {

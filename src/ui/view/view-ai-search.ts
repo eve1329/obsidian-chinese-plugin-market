@@ -10,6 +10,7 @@
 import { Notice } from "obsidian";
 import { logger } from "@shared/logger";
 import { isAISearchUsable } from "@shared/utils";
+import { isMobileEnvironment } from "@shared/platform";
 import type { ViewContext } from "@ui/view/view-context";
 
 /**
@@ -53,6 +54,15 @@ export async function runAISearch(
 
 	const settings = ctx.settings;
 	const isLocal = ctx.searchMode === "local";
+	if (isLocal && isMobileEnvironment()) {
+		// 移动端不支持本地语义；防御旧会话或外部调用误触发模型下载。
+		ctx.searchMode = "keyword";
+		ctx.aiSearchResult = null;
+		ctx.aiSearchQueryCache = "";
+		ctx.filterCache.reset();
+		ctx.scheduleRender();
+		return;
+	}
 	const tStart = Date.now();
 
 	if (!isLocal) {
@@ -98,7 +108,9 @@ export async function runAISearch(
 			apiKey: settings.aiSearchApiKey,
 			model: settings.aiSearchModel,
 			embedding: {
-				source: settings.embeddingSource,
+				source: isMobileEnvironment() && settings.embeddingSource === "local"
+					? "keyword"
+					: settings.embeddingSource,
 				baseURL: settings.embeddingBaseURL,
 				apiKey: settings.embeddingApiKey,
 				model: settings.embeddingModel,
@@ -114,7 +126,7 @@ export async function runAISearch(
 			new Notice(ctx.t("notice.local.indexing"), 8000);
 		}
 
-		// 首次本地语义搜索：worker 会后台下载量化模型权重（~23MB）。挂载与设置页同款的
+		// 首次本地语义搜索：worker 会后台下载量化模型权重（~118MB）。挂载与设置页同款的
 		// <progress> 进度条 + 百分比，轮询 plugin.localModelState 实时展示下载进度，
 		// 避免「看似无反应」（此前仅有 8s Notice，下载慢时无任何进度反馈）。
 		// 模型已就绪（status==="ready" 或本地模型此前预热过）则不显示进度条。

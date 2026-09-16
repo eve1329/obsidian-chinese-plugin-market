@@ -8,7 +8,6 @@
 import {
 	ItemView,
 	WorkspaceLeaf,
-	Platform,
 	Notice,
 } from "obsidian";
 import { toHTMLElement } from "@ui/dom/dom";
@@ -46,7 +45,7 @@ import { updatePluginCore } from "@app/plugin-updater";
 // 全局常量（VIEW_TYPE / LAYOUT / SEARCH_MODES / PLUGINS_URL）已收敛至 ./constants，
 // 作为唯一来源，避免 view 模块跨文件引用本中枢模块的常量（审计 P2-4）。
 import { VIEW_TYPE, LAYOUT } from "@shared/constants";
-import { cancelIdle } from "@shared/platform";
+import { cancelIdle, isMobileEnvironment } from "@shared/platform";
 
 /** 后台更新检测轮询间隔：对齐 stats 缓存 TTL（6h），避免过频网络请求 */
 const UPDATE_POLL_MS = 6 * 60 * 60 * 1000;
@@ -183,21 +182,13 @@ export const DEFAULT_SETTINGS: ChinesePluginMarketSettings = {
 };
 
 /**
- * 平台感知的默认设置工厂（#6：移动端语义搜索降级）。
+ * 平台感知的默认设置工厂（移动端禁用本地语义）。
  * 桌面端沿用 DEFAULT_SETTINGS（embeddingSource = "local"）；
- * 移动端默认 "keyword"（零 WASM），避免 26MB ONNX WASM 弱网下载慢 +
- * 模型加载/推理吃内存拖垮整个 Obsidian，甚至 4 分钟 worker 初始化超时致语义搜索失效。
- * 用户仍可在设置页手动切到 local（自担风险）。
+ * 移动端固定从 "keyword" 起步，且加载设置、设置页和模型入口均有额外保护，
+ * 避免下载百 MB 级权重或让模型加载/推理拖慢 Obsidian。
  */
 export function getDefaultSettings(): ChinesePluginMarketSettings {
-	// 测试/非常规环境下 Platform 可能未定义或访问抛错，统一按桌面端默认处理（embeddingSource = "local"）。
-	let isMobile = false;
-	try {
-		isMobile = typeof Platform !== "undefined" && Platform.isMobile === true;
-	} catch {
-		isMobile = false;
-	}
-	return isMobile
+	return isMobileEnvironment()
 		? { ...DEFAULT_SETTINGS, embeddingSource: "keyword" }
 		: { ...DEFAULT_SETTINGS };
 }

@@ -360,7 +360,7 @@ export const STRINGS = {
 	},
 	"settings.embedding.mode": { zh: "召回方式" },
 	"settings.embedding.mode.desc": {
-		zh: "关键词：纯本地匹配（默认，无需下载任何模型，速度最快）；API 向量：调用云端 Embedding 接口做语义搜索（需填密钥）；本地模型：本机离线运行 transformers.js 模型做语义搜索（首次会自动下载量化模型权重约 23MB，无需联网即可语义检索）。",
+		zh: "关键词：纯本地匹配（无需下载模型，速度最快）；API 向量：调用云端 Embedding 接口做语义搜索（需填密钥）；本地模型：仅桌面端可用，本机离线运行 transformers.js（首次会下载约 118MB 的量化模型权重）。",
 
 	},
 	"settings.embedding.keyword": { zh: "关键词（本地，默认）" },
@@ -411,7 +411,7 @@ export const STRINGS = {
 	"settings.embedding.index": { zh: "本地向量索引" },
 	"settings.embedding.index.btn": { zh: "构建/重建" },
 	"settings.embedding.index.buildingBtn": { zh: "构建中…" },
-	"settings.embedding.index.start": { zh: "开始后台构建（需本地模型，首次下载量化模型权重约 23MB，耗时数秒~十几秒）…" },
+	"settings.embedding.index.start": { zh: "开始后台构建（需本地模型，首次下载量化模型权重约 118MB）…" },
 	"settings.embedding.index.building": { zh: "正在构建本地向量索引… {p}/{t}" },
 	"settings.embedding.index.idle": { zh: "尚未构建。首次使用「本地语义」模式会自动构建；也可点击按钮手动预建（推荐，避免首次搜索等待）。" },
 	"settings.embedding.index.done": { zh: "本地向量索引已就绪，可离线语义搜索。" },
@@ -425,8 +425,7 @@ export const STRINGS = {
 	"settings.diagnostics.total": { zh: "总计 {total} ms" },
 	"settings.diagnostics.local": { zh: "本地阶段 {local} ms（仅本地计算：关键词召回 / 标题模糊 / RRF，不含 LLM 与 embedding 往返）" },
 	"settings.diagnostics.hint": { zh: "提示：「向量命中=0」通常说明索引没建好，而不是慢；「索引重建=1」说明这次搜索付了重建成本。本地阶段持续偏高时会自动在控制台告警。" },
-	"settings.embedding.mobileWarn": { zh: "移动端提示：本地模型需下载约 26MB WASM 运行时并加载模型权重，可能占用大量内存、拖慢 Obsidian，弱网下首次加载也较慢。推荐使用「关键词」或「API 向量」模式。" },
-	"settings.embedding.mobileLocalNotice": { zh: "移动端本地模型可能占用大量内存，如遇卡顿请切回关键词或 API。" },
+	"settings.embedding.mobileWarn": { zh: "移动端已禁用本地模型并使用轻量关键词召回，不会自动下载模型；需要语义能力时仍可配置 API 向量。" },
 	// 翻译引擎
 	"settings.engine.transmart": { zh: "启用腾讯翻译（免费）" },
 	"settings.engine.transmart.desc": {
@@ -643,7 +642,7 @@ export const STRINGS = {
 		zh: "本地语义搜索失败",
 	},
 	"notice.local.indexing": {
-		zh: "正在下载本地模型（约 23MB）并构建向量索引，首次稍候…",
+		zh: "正在下载本地模型（量化权重约 118MB）并构建向量索引，首次稍候…",
 	},
 	"notice.market.opened": { zh: "已跳转到社区市场" },
 	"notice.install.noRepo": { zh: "该插件缺少仓库信息，无法一键安装" },

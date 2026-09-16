@@ -260,7 +260,7 @@ export async function ensureDataLoaded(ctx: ViewContext) : Promise<boolean> {
 			// 记录本次成功拉取时间，供 TTL 自动失效判断（保证看到新上架插件）
 			ctx.lastListFetchAt = Date.now();
 			// A+B 预建：若用户已选「本地 embedding」且尚未建索引，数据就绪后后台自动预建一次
-			// （仅对显式选了本地语义的用户生效，避免给默认 keyword/AI 用户强塞 110MB 模型）
+			// （仅对桌面端显式选了本地语义的用户生效，避免给 keyword/AI 用户下载模型）
 			if (ctx.settings.embeddingSource === "local") {
 				void ctx.buildLocalIndex(false).catch(() => {});
 				// 预热本地模型：即使索引已从 SQLite 加载（buildLocalIndex 幂等跳过），

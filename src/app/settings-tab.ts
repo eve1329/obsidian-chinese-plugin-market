@@ -3,7 +3,6 @@ import {
 	Setting,
 	Notice,
 	requestUrl,
-	Platform,
 	type App,
 	type SettingDefinitionItem,
 } from "obsidian";
@@ -12,6 +11,7 @@ import { makeT, type I18nKey } from "@shared/i18n";
 import { normalizeBaseUrl, isLocalBaseUrl, isAISearchUsable } from "@shared/utils";
 import { BaiduTranslateClient } from "@translation/api/baidu";
 import { isWebGPUAvailable } from "@semantic/embedding";
+import { isMobileEnvironment } from "@shared/platform";
 import { localPhaseMs, PHASE } from "@domain/search/search-timing";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 import { VIEW_TYPE } from "@shared/constants";
@@ -165,6 +165,14 @@ export class TranslatorSettingTab extends PluginSettingTab {
 	 */
 	getSettingDefinitions(): SettingDefinitionItem[] {
 		const s = this.plugin.settings;
+		const isMobile = isMobileEnvironment();
+		const embeddingModeOptions: Record<string, string> = {
+			keyword: this.t("settings.embedding.keyword"),
+			api: this.t("settings.embedding.api"),
+		};
+		if (!isMobile) {
+			embeddingModeOptions.local = this.t("settings.embedding.local");
+		}
 		return [
 			{
 				type: "group",
@@ -473,18 +481,14 @@ export class TranslatorSettingTab extends PluginSettingTab {
 								control: {
 									type: "dropdown",
 									key: "embeddingSource",
-									defaultValue: "local",
-									options: {
-										keyword: this.t("settings.embedding.keyword"),
-										api: this.t("settings.embedding.api"),
-										local: this.t("settings.embedding.local"),
-									},
+									defaultValue: isMobile ? "keyword" : "local",
+									options: embeddingModeOptions,
 								},
 							},
 							{
-								// #6: 移动端语义搜索降级提示。仅移动端展示，提醒用户本地模型的内存/下载开销。
+								// 移动端不提供本地模型选项，明确告知当前使用轻量关键词模式。
 								name: this.t("settings.embedding.mobileWarn"),
-								visible: () => Platform.isMobile,
+								visible: () => isMobileEnvironment(),
 								render: (setting) => {
 									setting.descEl.setText(this.t("settings.embedding.mobileWarn"));
 								},
@@ -858,15 +862,12 @@ export class TranslatorSettingTab extends PluginSettingTab {
 		return (this.plugin.settings as unknown as Record<string, unknown>)[key];
 	}
 
-	/** 移动端切到本地模型时，本设置页会话内已弹过的内存警告标记（#6：警告一次） */
-	private mobileLocalWarned = false;
-
 	/** 声明式控件写值：透传到 plugin.settings[key]，带 trim/类型收窄 + 副作用 + 持久化 */
 	setControlValue(key: string, value: unknown): void | Promise<void> {
-		// #6: 移动端用户手动切到本地模型时，弹一次内存占用警告（自担风险）。
-		if (key === "embeddingSource" && value === "local" && Platform.isMobile && !this.mobileLocalWarned) {
-			this.mobileLocalWarned = true;
-			new Notice(this.t("settings.embedding.mobileLocalNotice"), 8000);
+		// 移动端不允许切到本地模型；即使旧 UI/外部调用传入 local，也归一为
+		// keyword，避免在当前会话里启动 worker 或下载模型。
+		if (key === "embeddingSource" && value === "local" && isMobileEnvironment()) {
+			value = "keyword";
 		}
 		const s = this.plugin.settings as unknown as Record<string, unknown>;
 		switch (key) {
