@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Platform } from "obsidian";
 import ChinesePluginMarketPlugin from "@app/plugin";
 import { Translator } from "@domain/catalog/translator";
+import { resetHttpClient, setHttpClient } from "@data/net/http-port";
 
 /**
  * 持久化层回归（审计 P0-1）。
@@ -115,6 +116,40 @@ describe("Plugin 持久化契约（P0 回归）", () => {
 			expect((plugin as any).localIndexState.status).toBe("idle");
 		} finally {
 			Platform.isMobile = previous;
+		}
+	});
+
+	it("SQLite WASM 缺失时可通过设置页下载并写入插件目录", async () => {
+		const { plugin } = makePlugin();
+		const files = new Map<string, Uint8Array>();
+		const adapter = {
+			exists: vi.fn(async (path: string) => files.has(path)),
+			writeBinary: vi.fn(async (path: string, data: ArrayBuffer) => files.set(path, new Uint8Array(data))),
+		};
+		Object.assign(plugin, {
+			app: { vault: { adapter } },
+			manifest: { id: "chinese-plugin-market", version: "2.56.8" },
+		});
+		const bytes = new Uint8Array(2048);
+		bytes.set([0x00, 0x61, 0x73, 0x6d]);
+		const request = vi.fn(async () => ({
+			status: 200,
+			arrayBuffer: bytes.buffer,
+			json: null,
+			text: "",
+			headers: {},
+		}));
+		setHttpClient({ request });
+		try {
+			await plugin.repairSqliteRuntime();
+			expect(request).toHaveBeenCalledWith(
+				expect.objectContaining({
+					url: "https://github.com/miaoziguan/obsidian-chinese-plugin-market/releases/download/2.56.8/sql-wasm.wasm",
+				}),
+			);
+			expect(files.get(".obsidian/plugins/chinese-plugin-market/sql-wasm.wasm")?.length).toBe(2048);
+		} finally {
+			resetHttpClient();
 		}
 	});
 
