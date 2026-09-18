@@ -37,7 +37,14 @@ jobs:
       - name: 收集发布产物
         run: |
           mkdir -p dist
-          cp main.js manifest.json styles.css versions.json dist/
+          cp \
+            main.js manifest.json styles.css versions.json \
+            sql-wasm.wasm ort-wasm-simd-threaded.jsep.wasm \
+            embedding-worker.bundle.js \
+            plugin-tags.json plugin-recommend.json seeded-translator-cache.json \
+            plugin-release-dates.json plugin-chinese-ecosystem.json plugin-bamboo-series.json \
+            dist/
+          (cd dist && zip -q "../chinese-plugin-market-${GITHUB_REF_NAME}.zip" .)
 
       - name: 为构建产物生成来源证明（build provenance / attestation）
         uses: actions/attest-build-provenance@v2
@@ -58,4 +65,4 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG · CI 构建" \
             --notes "由 CI 自动构建并附构建来源证明（artifact attestations）。" \
-            dist/main.js dist/manifest.json dist/styles.css dist/versions.json
+            dist/* "chinese-plugin-market-${TAG}.zip"

@@ -52,8 +52,8 @@ Chinese Market 把这件事彻底翻过来：**用中文搜、看中文、装得
 > 上架审核通过后即可在此搜索到。若尚未上架，请用方式二。
 
 ### 方式二：手动安装
-1. 到 [Releases](https://github.com/miaoziguan/obsidian-chinese-plugin-market/releases) 下载最新版的 `main.js`、`manifest.json`、`styles.css`
-2. 放入你的 vault 目录：`<你的仓库>/.obsidian/plugins/chinese-plugin-market/`
+1. 到 [Releases](https://github.com/miaoziguan/obsidian-chinese-plugin-market/releases) 下载最新版的 `chinese-plugin-market-<版本号>.zip`
+2. 将 ZIP 内的全部文件解压到你的 vault 目录：`<你的仓库>/.obsidian/plugins/chinese-plugin-market/`（不要只复制 `main.js`）
 3. 在 Obsidian 设置 → 第三方插件中启用「Chinese Market」
 
 ---
@@ -126,8 +126,8 @@ Obsidian's community plugin store lists **5,000+ plugins with English names** �
 3. Click Install and enable.
 
 **Option 2 — Manual install.**
-1. Download the latest `main.js`, `manifest.json`, and `styles.css` from [Releases](https://github.com/miaoziguan/obsidian-chinese-plugin-market/releases).
-2. Put them in `<your vault>/.obsidian/plugins/chinese-plugin-market/`.
+1. Download `chinese-plugin-market-<version>.zip` from [Releases](https://github.com/miaoziguan/obsidian-chinese-plugin-market/releases).
+2. Extract **all** files from the ZIP into `<your vault>/.obsidian/plugins/chinese-plugin-market/` (do not copy only `main.js`).
 3. Enable "Chinese Market" under Settings → Community plugins.
 
 ## Usage

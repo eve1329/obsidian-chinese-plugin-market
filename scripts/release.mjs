@@ -54,7 +54,21 @@ if (!localTag) {
 }
 
 // 4. 确认构建产物存在
-const assets = ["main.js", "manifest.json", "styles.css", "versions.json"];
+const assets = [
+  "main.js",
+  "manifest.json",
+  "styles.css",
+  "versions.json",
+  "sql-wasm.wasm",
+  "ort-wasm-simd-threaded.jsep.wasm",
+  "embedding-worker.bundle.js",
+  "plugin-tags.json",
+  "plugin-recommend.json",
+  "seeded-translator-cache.json",
+  "plugin-release-dates.json",
+  "plugin-chinese-ecosystem.json",
+  "plugin-bamboo-series.json",
+];
 for (const f of assets) {
   try {
     readFileSync(join(root, f));
