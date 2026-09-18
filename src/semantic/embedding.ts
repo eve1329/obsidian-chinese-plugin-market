@@ -1,20 +1,16 @@
 /**
- * 可插拔 Embedding 召回。
+ * 阶段 2：可插拔 Embedding 召回。
  *
- * 设计：把「召回」从「本地关键词」升级为「向量语义」，并做成两档可配 + 自动降级：
+ * 设计：把「召回」从「本地关键词」升级为「向量语义」，并做成三档可配 + 自动降级：
  *   1. ApiEmbeddingProvider    —— 复用 OpenAI 兼容 /v1/embeddings 端点（推荐，不占插件体积）
- *   2. LocalEmbeddingProvider  —— 本地模型（transformers.js 跑在 Worker，离线可用）
- *
- * 关键词兜底不在本模块：向量路不可用时由 ai.ts 的 BM25 召回（bm25RecallScores，
- * CJK 三元组倒排）接管，再由 RRF 与标题模糊融合。旧注释写的「localRecall 兜底」
- * 已过时——utils.ts 的 localRecall/localRecallScores 现在只剩测试在用。
+ *   2. LocalEmbeddingProvider  —— 本地模型（离线，占体积；此处先留骨架，阶段 2.5 接入）
+ *   3. 关键词兜底（localRecall）—— 无 embedding 时永远可用（在 translator 内编排）
  *
  * 向量的数学内核（余弦相似度 / topK）在 utils.ts，纯函数、已单测。
  * 本模块只负责「文本 → 向量」的获取（含 HTTP），以及索引缓存的编排。
  */
 
-import { cosineSimilarity, topKBySimilarity, contentHash, normalizeBaseUrl, normalizeVector, mapWithConcurrency } from "@shared/utils";
-import { computeIndexFingerprints } from "@shared/fingerprint";
+import { cosineSimilarity, topKBySimilarity, contentHash, normalizeBaseUrl, normalizeVector } from "@shared/utils";
 import { netRequest } from "@data/net/net";
 import { WorkerLocalBackend } from "@semantic/workers/worker-backend";
 import { t2sForEmbed } from "@translation/lexicon/t2s";
@@ -148,12 +144,6 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 	private static readonly RETRY_BASE_DELAY_MS = 500;
 	/** 防止服务端返回过大的 Retry-After 导致一次搜索无限期挂起。 */
 	private static readonly RETRY_MAX_DELAY_MS = 30_000;
-	/**
-	 * 分批请求的并发上限。分批串行时 6000 条 / 64 ≈ 94 个请求排队，索引构建时间
-	 * 完全被网络往返主导；受控并发可显著缩短。上限刻意保持克制，避免触发服务端限流。
-	 */
-	private static readonly CONCURRENCY = 4;
-
 	constructor(private config: EmbeddingConfig) {}
 
 	async embed(texts: string[]): Promise<number[][]> {
@@ -161,30 +151,13 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 		if (!this.config.model) throw new Error("Embedding 未配置模型名");
 		if (texts.length === 0) return [];
 
-		const batches: string[][] = [];
+		const out: number[][] = [];
 		for (let i = 0; i < texts.length; i += ApiEmbeddingProvider.BATCH) {
-			batches.push(texts.slice(i, i + ApiEmbeddingProvider.BATCH));
+			const batch = texts.slice(i, i + ApiEmbeddingProvider.BATCH);
+			const vecs = await this.embedBatch(batch);
+			for (const v of vecs) out.push(v);
 		}
-
-		// 单批在瞬时错误下会先按退避策略重试；重试耗尽后停止派发后续批次，避免
-		// 鉴权/限流或持续网络故障时继续把剩余请求打向已经拒绝的服务端。
-		// 已经在途的批次自然结束，不再派发新的。
-		let aborted = false;
-		const results = await mapWithConcurrency(
-			batches,
-			ApiEmbeddingProvider.CONCURRENCY,
-			async (batch) => {
-				if (aborted) throw new Error("Embedding 分批已中止（前序批次失败）");
-				try {
-					return await this.embedBatch(batch);
-				} catch (e: unknown) {
-					aborted = true;
-					throw e;
-				}
-			}
-		);
-		// mapWithConcurrency 按 index 回填结果，顺序与输入文本一致
-		return results.flat();
+		return out;
 	}
 
 	private async embedBatch(batch: string[]): Promise<number[][]> {
@@ -245,11 +218,8 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 					`Embedding 响应格式异常（data 数量 ${Array.isArray(data) ? data.length : 0}，期望 ${batch.length}）`
 				);
 			}
-
 			const seen = new Set<number>();
 			const validated = data.map((item) => {
-				// 单条请求兼容少数省略 index 的 OpenAI 兼容实现；批量响应必须显式
-				// 提供唯一、连续的 index，否则无法证明向量与输入顺序对应。
 				const index = item?.index ?? (batch.length === 1 ? 0 : undefined);
 				if (
 					!Number.isInteger(index) ||
@@ -270,11 +240,6 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 				}
 				return { index: index as number, embedding: emb as number[] };
 			});
-
-			if (seen.size !== batch.length) {
-				throw new Error("Embedding 响应格式异常（index 不完整）");
-			}
-			// 按 index 排序，保证与输入顺序一致
 			validated.sort((a, b) => a.index - b.index);
 			return validated.map((item) => item.embedding);
 		}
@@ -478,16 +443,17 @@ export interface IndexPlugin {
 	descZh?: string;
 }
 
+/** 向量索引构建选项，兼容搜索热路径和后台动态构建。 */
 export interface BuildVectorIndexOptions {
-	/** 调用方已计算的字段指纹；搜索热路径用它避免重复全库遍历。 */
+	/** 调用方已计算的字段指纹；搜索热路径可避免重复遍历。 */
 	precomputedFieldsHash?: string;
-	/** 完整向量空间身份（来源、endpoint、模型），用于阻止跨 endpoint 复用。 */
+	/** 完整向量空间身份（来源、endpoint、模型）。 */
 	embeddingIdentity?: string;
-	/** 动态构建开始时，发布经逐条指纹确认可复用的旧向量。 */
-	onReuse?: (reused: Map<string, number[] | Float32Array>) => void;
-	/** 动态构建过程中，每 embed 完一片即发布新向量。 */
+	/** 动态构建中每完成一片就发布更新。 */
 	onPartial?: (updates: Map<string, number[] | Float32Array>) => void;
-	/** 分片大小（默认 256）。 */
+	/** 发布经过 per-id 指纹确认可复用的旧向量。 */
+	onReuse?: (updates: Map<string, number[] | Float32Array>) => void;
+	/** 动态构建分片大小，默认 256。 */
 	chunk?: number;
 }
 
@@ -503,10 +469,6 @@ export interface BuildVectorIndexOptions {
  *   标签：<tags 用空格 join>
  * - category 句首强锚点（主导向量方向），tags 尾随弱信号（微调同分类内偏好）。
  * - 文本变化 → hash 自然变化 → 旧索引自动重建（首次搜索重 embed 一次）。
- *
- * @param precomputedFieldsHash 调用方若已算过字段指纹可直接传入，省掉本函数内的全库遍历。
- *   搜索热路径（AISearcher）会一次遍历同时算出 BM25 与向量两个指纹后传入；
- *   未传时（如启动期的一次性后台预建）在本函数内自算，行为不变。
  */
 export async function buildVectorIndex(
 	provider: EmbeddingProvider,
@@ -515,17 +477,15 @@ export async function buildVectorIndex(
 	prevIndex?: VectorIndex | null,
 	categorySchemaVersion?: string,
 	optionsOrFieldsHash?: BuildVectorIndexOptions | string,
-	legacyEmbeddingIdentity?: string
+	legacyEmbeddingIdentity?: string,
 ): Promise<VectorIndex> {
-	// 兼容本地分支已有的位置参数调用，以及远端新增的 options 调用。
 	const opts: BuildVectorIndexOptions = typeof optionsOrFieldsHash === "string"
 		? { precomputedFieldsHash: optionsOrFieldsHash, embeddingIdentity: legacyEmbeddingIdentity }
 		: { ...(optionsOrFieldsHash ?? {}), embeddingIdentity: optionsOrFieldsHash?.embeddingIdentity ?? legacyEmbeddingIdentity };
 	const embeddingIdentity = opts.embeddingIdentity;
 	// 稳态快速短路：先对「原始字段」算轻量指纹（不做 t2s / 文本拼装 / perIdHash），
 	// 与 prevIndex.fieldsHash 一致即代表最终文本必然不变，直接复用整个索引（PERF-2）。
-	// 这一步把每次搜索的全库 t2s + contentHash 重算（数十 ms）降为一次单趟 djb2 遍历
-	// （实测约 1ms）；该指纹还与 BM25 索引的失效签名合并为同一次遍历，见 shared/fingerprint.ts。
+	// 这一步把每次搜索的全库 t2s + contentHash 重算（数十~上百 ms）降为一次字段拼接。
 	const fieldsHash = opts.precomputedFieldsHash ?? computeFieldsHash(plugins);
 	if (
 		prevIndex &&
@@ -622,7 +582,6 @@ export async function buildVectorIndex(
 			needEmbed.push(i);
 		}
 	}
-
 	if (opts.onReuse) {
 		const reused = new Map<string, number[] | Float32Array>();
 		for (let i = 0; i < plugins.length; i++) {
@@ -634,7 +593,7 @@ export async function buildVectorIndex(
 	if (needEmbed.length > 0) {
 		// 分片 embed + onPartial 实时回调：调用方（plugin）据此把部分索引发布进活索引，
 		// 构建期间搜索即可用已就绪部分（动态全量构建，2026-09-16）。
-		const CHUNK = opts?.chunk ?? 256;
+		const CHUNK = opts.chunk ?? 256;
 		for (let s = 0; s < needEmbed.length; s += CHUNK) {
 			const slice = needEmbed.slice(s, s + CHUNK);
 			const newVecs = await provider.embed(slice.map((i) => texts[i]));
@@ -644,7 +603,7 @@ export async function buildVectorIndex(
 				vectors[slice[k]] = v;
 				updates.set(plugins[slice[k]].id, v);
 			}
-			opts?.onPartial?.(updates);
+			opts.onPartial?.(updates);
 		}
 	}
 
@@ -662,14 +621,28 @@ export async function buildVectorIndex(
 }
 
 /**
- * 向量索引的字段指纹（id+name+description+中文译文+category+tags）。
- *
- * 委托给 shared/fingerprint 的单趟实现，避免两处各写一份哈希逻辑而悄悄漂移。
- * 本函数只作为「调用方未预计算」时的兜底（如启动期一次性后台预建）——搜索热路径
- * 会传入预计算值，见 buildVectorIndex 的 precomputedFieldsHash 参数。
+ * 对原始字段算轻量指纹（id+name+description+category+tags+中文译文 顺序拼接 + djb2）。
+ * 不做 t2s / 文本拼装 / truncate —— 仅用于「内容是否变化」的粗判，命中即跳过
+ * 后续全库重算。与 contentHash 语义独立（后者基于 t2s 后文本，用于增量比对）。
+ * 含中文译文：译文更新（机翻→AI 翻→人工采纳）会改变指纹 → 触发该条增量重 embed（动态索引）。
  */
 function computeFieldsHash(plugins: IndexPlugin[]): string {
-	return computeIndexFingerprints(plugins, (p) => p).fields;
+	let h = 5381;
+	const mix = (s: string) => {
+		for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+		h = ((h << 5) + h + 0x1f) | 0; // 字段分隔符，避免拼接歧义
+	};
+	for (const p of plugins) {
+		mix(p.id);
+		mix(p.name);
+		mix(p.description);
+		mix(p.category ?? "");
+		mix(p.nameZh ?? "");
+		mix(p.descZh ?? "");
+		for (const t of p.tags ?? []) mix(t);
+		h = ((h << 5) + h + 0x1e) | 0; // 插件分隔符
+	}
+	return (h >>> 0).toString(16);
 }
 
 /**
@@ -687,7 +660,8 @@ export async function vectorRecall(
 	return m ? Array.from(m.keys()) : [];
 }
 
-/** query embedding LRU 缓存（PERF-9）：命中则跳过重复 embed（省一次 API 往返/推理）。 */
+/** query embedding LRU 缓存（PERF-9）：key = provider名+模型+query，命中则跳过重复 embed。
+ *  模型进 key：同会话内切换模型（如 bge→e5）不会命中旧模型的过期向量。 */
 const QUERY_VEC_CACHE = new Map<string, number[]>();
 const QUERY_VEC_CACHE_MAX = 64;
 

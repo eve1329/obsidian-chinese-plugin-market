@@ -35,6 +35,9 @@ import { type ListState } from "@ui/dom/list-state";
 import { TrendingEngine } from "@domain/recommend/trending";
 import { InvertedIndex } from "@domain/recommend/similar";
 import { type AuthorGroup } from "@translation/lexicon/pinyin-init";
+import { createDefaultManageSettings } from "@domain/manage/group";
+import type { ManageSettings } from "@domain/manage/types";
+import type { BetaPluginEntry } from "@app/beta-updater";
 
 import type ChinesePluginMarketPlugin from "@app/plugin";
 import { updatePluginCore } from "@app/plugin-updater";
@@ -120,6 +123,20 @@ export interface ChinesePluginMarketSettings {
 	tmFolder: string;
 	/** 评测台账笔记存放文件夹（vault 根相对路径）；留空 = 默认藏进 .obsidian 私有目录 */
 	reviewFolder: string;
+	/** 设置页即时机翻：是否启用（钩住 Setting 组件，翻译其他插件设置页文案） */
+	translateSettingsEnabled: boolean;
+	/** 设置页翻译通道：free=腾讯翻译·免费（零配置）；baidu=百度机器翻译（需配置） */
+	translateSettingsProvider: "free" | "baidu";
+	/** 不翻译的插件 ID（逗号/空白分隔），用于个别会回读自身 DOM 文案的插件 */
+	translateSettingsBlacklist: string;
+	/** 设置页翻译串缓存（跨会话持久，超额自动淘汰最旧） */
+	settingsTranslateCache: Record<string, string>;
+	/** 已装插件管理（增强原生「设置 → 社区插件」页：分组 / 备注 / 筛选） */
+	manage: ManageSettings;
+	/** 直链 Beta 插件跟踪表：记录「从直链装上的插件」来源，支持回头更新（P0） */
+	betaPlugins: BetaPluginEntry[];
+	/** 启动时自动检查并更新未冻结的 Beta 插件（仅桌面端） */
+	betaAutoUpdate: boolean;
 }
 
 /** 单个启用组合 Profile：命名 + 启用插件 id 列表 + 可选绑定工作区布局 */
@@ -179,6 +196,13 @@ export const DEFAULT_SETTINGS: ChinesePluginMarketSettings = {
 	notifyInstalledUpdates: true,
 	nameDisplay: "translated",
 	profiles: [],
+	translateSettingsEnabled: false,
+	translateSettingsProvider: "free",
+	translateSettingsBlacklist: "",
+	settingsTranslateCache: {},
+	manage: createDefaultManageSettings(),
+	betaPlugins: [],
+	betaAutoUpdate: false,
 };
 
 /**
@@ -188,9 +212,10 @@ export const DEFAULT_SETTINGS: ChinesePluginMarketSettings = {
  * 避免下载百 MB 级权重或让模型加载/推理拖慢 Obsidian。
  */
 export function getDefaultSettings(): ChinesePluginMarketSettings {
-	return isMobileEnvironment()
-		? { ...DEFAULT_SETTINGS, embeddingSource: "keyword" }
-		: { ...DEFAULT_SETTINGS };
+	// manage 是可变对象，必须每次新建：加载设置走的是 Object.assign 浅合并，
+	// 若直接沿用 DEFAULT_SETTINGS.manage，任何改动都会污染进程内的默认常量。
+	const base = { ...DEFAULT_SETTINGS, manage: createDefaultManageSettings() };
+	return isMobileEnvironment() ? { ...base, embeddingSource: "keyword" } : base;
 }
 
 // ──────────────────────────────────────────

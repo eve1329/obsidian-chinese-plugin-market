@@ -55,16 +55,64 @@ export interface AppPlugins {
 	disablePluginAndSave?: (arg: PluginManifestLike | string) => Promise<void>;
 }
 
+/** 设置面板单个 Tab 的最小可读形状 */
+export interface AppSettingTabLike {
+	id?: string;
+	name?: string;
+	containerEl?: HTMLElement;
+	/** 第三方插件设置页才有：本体插件实例 → manifest（核心设置页无此字段） */
+	plugin?: { manifest?: PluginManifestLike };
+}
+
 /** 设置面板（app.setting）的最小可读形状 */
 export interface AppSetting {
 	openTabById?: (pluginId: string) => unknown;
 	open?: () => unknown;
+	/** 已注册的设置页 Tab 列表 */
+	settingTabs?: AppSettingTabLike[];
+	/** 当前激活的 Tab */
+	activeTab?: AppSettingTabLike | null;
+	/** 所有 Tab 内容的容器（MutationObserver 的观察根） */
+	tabContentContainer?: HTMLElement;
+	/** 页面栈（外观页下钻后非空） */
+	pageStack?: unknown[];
+	/** 取当前下钻页面的根元素 */
+	getCurrentPageEl?: () => HTMLElement | null;
+	/** 重绘当前页 */
+	refreshCurrentPage?: () => void;
+	/** 生命周期方法（增强设置页时会被包裹） */
+	onOpen?: () => unknown;
+	onClose?: () => unknown;
+	openTab?: (tab: unknown) => unknown;
+	closeActiveTab?: () => unknown;
+	openPage?: (page: unknown) => unknown;
+	closePage?: () => unknown;
+}
+
+/** 自定义 CSS（主题 / 片段）运行时控制（app.customCss） */
+export interface AppCustomCss {
+	/** 检测到的全部片段名（无 .css 后缀）；旧版中也作为已启用列表使用 */
+	snippets?: string[];
+	/** 当前已启用的 CSS 片段集合（Obsidian 新版优先使用） */
+	enabledSnippets?: Set<string>;
+	/**
+	 * 切换 CSS 片段启用状态。Obsidian 内部签名 (name, enabled)，
+	 * name 为片段基名（无 .css）。
+	 */
+	setCssEnabledStatus?: (name: string, enabled: boolean) => void;
+	/** 立即重新加载并应用所有已启用 CSS 片段 */
+	loadSnippets?: () => void;
+	/** 防抖版的 loadSnippets（批量切换时避免频繁刷新） */
+	requestLoadSnippetsDebouncer?: () => void;
+	/** 切换并保存当前主题（目录名） */
+	setTheme?: (name: string) => void;
 }
 
 /** App 的内部扩展形状（叠加在官方 App 之上） */
 export interface AppInternals {
 	plugins?: AppPlugins;
 	setting?: AppSetting;
+	customCss?: AppCustomCss;
 }
 
 /** 将官方 App 断言为带内部字段的形状（替代 `as any`） */

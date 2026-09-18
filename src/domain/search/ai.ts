@@ -13,14 +13,10 @@
 import { parseJSON, parseRecallCandidates, fuzzyTitleScores, rrfFuse, topNFused, isLocalBaseUrl } from "@shared/utils";
 import { computeIndexFingerprints } from "@shared/fingerprint";
 import { logger } from "@shared/logger";
-import { tokenizeForBM25, bm25Idf, bm25LenNorm, bm25TermWeight } from "@domain/search/bm25";
+import { tokenizeForBM25, bm25Score, BM25_TOKENIZER_VERSION } from "@domain/search/bm25";
+import { applyQualityFactors } from "@domain/search/quality";
 import { t2sForEmbed } from "@translation/lexicon/t2s";
-import {
-	expandQuery,
-	expandQueryTerms,
-	findMatchedExactPhrases,
-	PLUGIN_EXACT_PHRASES,
-} from "@translation/lexicon/synonyms";
+import { expandQuery } from "@translation/lexicon/synonyms";
 import {
 	createEmbeddingProvider,
 	buildVectorIndex,
@@ -38,13 +34,7 @@ import type {
 import type { CompareItem } from "@domain/compare/plugin-insight";
 import type { PluginTagService } from "@domain/catalog/plugin-tags";
 import { LLMClient } from "@translation/api/api";
-import {
-	SearchTiming,
-	formatSearchTiming,
-	localPhaseMs,
-	PHASE,
-	type SearchTimingSnapshot,
-} from "@domain/search/search-timing";
+import { SearchTiming, formatSearchTiming, type SearchTimingSnapshot } from "@domain/search/search-timing";
 
 // ───────── 常量 ─────────
 
@@ -56,40 +46,8 @@ const VECTOR_RECALL_CAP = 300;
  *  从 150 调大到 300：本地语义不经 LLM，宽召回提升召回率；AI 模式精排只看前 30（RANK_TOP_N），
  *  候选多但精排不慢，还提升多样性（对齐 vault-curate「先宽召回再 trim」）。 */
 const CANDIDATE_POOL_CAP = 300;
-/**
- * 单条召回路径进入 RRF 前的截断上限。
- *
- * 这是**有界近似**，不是无损截断 —— 别当成恒等变换：
- * RRF 贡献为 w/(60+rank+1)，丢掉 rank>500 的名次，等于把该文档的融合分最多压低
- * w/561（≈0.0018）。它仍可能凭**其它**召回路径进入候选池（例如在向量路 rank≤300
- * 的贡献可达 1/61），只是少了一点权重 —— 所以「rank>500 的文档不可能进候选池」
- * 这个说法是错的，不能拿来当证明。
- *
- * 为什么仍然采用：候选池只取融合分前 300，而本路径保留的 rank ≤ 299 的 300 条文档
- * 各自融合分已 ≥ 1/360（≈0.0028）。因此截断只会影响「恰好落在第 300 名边界 0.0018
- * 以内」的近并列 —— 最多让边界附近两条文档换位，不会让明显相关的文档消失。
- * 换来的是不必把全量命中都物化出来再排序。
- */
-const RECALL_PATH_CAP = 500;
-/**
- * 「本地阶段偏慢」告警阈值（ms）。
- *
- * 口径是 localPhaseMs —— **只统计我们自己的代码**：关键词召回 / 标题模糊 / RRF 融合。
- * 已排除 EXTERNAL_PHASES（LLM 精排、LLM 兜底召回、query 编码、向量索引），它们受网络
- * 往返或模型推理主导，正常也能到秒级甚至数十秒；用它们做阈值会持续误报，最终训练出
- * 「忽略告警」的习惯。
- *
- * 6000 条插件规模下这三个本地阶段实测约 1.5~3ms，超过 400ms 说明确实出现了非预期退化
- * （如 BM25 退化为全量遍历、某条召回路径异常），值得一条 warn 而非淹没在 debug 里。
- *
- * 注：向量索引「每次都重建」不靠本阈值发现 —— 那是外部成本（embedding 调用）而非
- * 我们代码变慢，由 finishTiming 里的「连续重建」告警 + `索引重建` 计数器负责。
- */
-const SLOW_LOCAL_MS = 400;
 /** AI 搜索：每批最大插件数 */
 const BATCH_SIZE = 3000;
-/** 计时计数器名：本次搜索是否重建了向量索引（1/0） */
-const COUNTER_INDEX_REBUILT = "索引重建";
 /**
  * LLM 精排固定处理前 N 条候选（本地召回已给粗序，仅前 30 条进 LLM）。
  * 理由字段已设为「始终要求生成」，最大值靠 RANK_TOP_N 控制，低于 30 会报错。
@@ -97,189 +55,117 @@ const COUNTER_INDEX_REBUILT = "索引重建";
 const RANK_TOP_N = 30;
 /** 向量召回最低相似度阈值（0-1），低于此值的命中不纳入候选 */
 const VECTOR_MIN_SCORE = 0.3;
-
-/** 判断插件是否被 LLM 判定为无关。
- *  只列「最小充分集」：更长的变体（"无关系"/"无关联"）含 "无关"、"没关系" 含 "没关"，
- *  已被子串匹配覆盖，单列只会让列表出现看似不同的重复项。 */
-const IRRELEVANT_KEYWORDS = ["无关", "不相关", "没关"];
-
 /**
- * 预先构建的 BM25 倒排索引（只依赖插件列表，与 query 无关，可跨多次搜索复用）。
- *
- * 为什么是倒排而非「文档 token 表 + 逐条打分」：后者每次查询都要遍历全库、
- * 且 bm25Score 内部会为每条文档重建一次 tf Map（6000 条即 6000 次 Map 分配）。
- * 倒排把词频在构建期算好、并让召回只触碰「含 query term」的文档。
- * 实测（跑 scripts/bench-search-perf.mjs 实验 1 可复现）：6000 条语料下比旧实现
- * 快约 40~65x，随语料长度与查询分布波动。其中降幅的大头是「不再为每条文档分配
- * Map」（约 88%），而非算法本身。
+ * BM25 标题场加权倍数：标题场（name+nameZh）命中比正文场（description+descZh）命中更值钱。
+ * 对齐 search-engine v2_2 的 TITLE_W=2.0 惯例（独立标题倒排 + 标题场得分×2）——
+ * 插件搜索里「名字即答案」是高频形态（搜"思维导图"应让名字含 Mindmap/思维导图 的插件置顶），
+ * 不加权时长 description 会稀释名字信号。
  */
-export interface Bm25Index {
-	/** docIdx → 插件 id。docIdx 即插件在列表中的位置，同时用作同分时的稳定 tie-break */
-	ids: string[];
-	/** docIdx → 文档 token 数（长度归一化用，避免召回时再数一遍） */
-	docLen: number[];
-	/** term → 倒排表：命中该 term 的 docIdx 与对应词频 */
-	postings: Map<string, { idx: number[]; tf: number[] }>;
-	/** term → 文档频率（出现在多少个文档中） */
-	df: Map<string, number>;
-	/** 精确短语 → 倒排表；只收录词表中的短语连续命中 */
-	phrasePostings?: Map<string, { idx: number[]; tf: number[] }>;
-	/** 精确短语 → 文档频率 */
-	phraseDf?: Map<string, number>;
+const BM25_TITLE_W = 2.0;
+
+/** 判断插件是否被 LLM 判定为无关 */
+const IRRELEVANT_KEYWORDS = ["无关", "不相关", "无关联", "不相关", "没关", "无关系"];
+
+/** 预先构建的 BM25 倒排/词频索引（只依赖插件列表，与 query 无关，可跨多次搜索复用）。
+ *  标题场（name+nameZh）与正文场（description+descZh）分开统计 df/avgdl：
+ *  两场长度与 IDF 分布差异大（标题仅 2-6 token，正文几十 token），混在一个 df 里
+ *  会让正文稀释标题信号——search-engine 用独立标题倒排（titleIndex.dat）是同一理由。 */
+interface Bm25Index {
+	docTokensById: Map<string, { title: string[]; body: string[] }>;
+	dfTitle: Map<string, number>;
+	dfBody: Map<string, number>;
 	N: number;
-	avgdl: number;
-	/** 失效签名：全部 id/name/description 的内容指纹，任一字段变化即重建 */
+	avgdlTitle: number;
+	avgdlBody: number;
+	/** 失效签名：列表长度 + 首尾 id + 译文长度指纹，任一变化即重建（见 bm25IndexSig） */
 	sig: string;
 }
 
 /**
- * 构建 BM25 倒排索引：对全量插件列表做简体转换 + CJK 分词 + 倒排表/df 统计。
- * 该结果只依赖插件列表本身，与 query 无关，故可缓存跨多次搜索复用
- * （连续输入触发多次 AI 搜索时避免对 6000 条反复分词，省数百 ms）。
- *
- * @param sig 由调用方（getBm25Index）算好传入，避免这里重复计算内容指纹。
+ * BM25 索引失效签名：分词器版本指纹 + 列表长度 + 首尾 id + 译文长度合计。
+ * 译文指纹必不可少：nameZh/descZh 参与分词文本后，异步翻译加载完成时列表长度与
+ * 首尾 id 都不变——没有指纹则缓存永不重建、中文关键词路永久缺失
+ *（同 P-0055「索引变更必须联动失效缓存」一族教训）。
+ * 分词器版本指纹同理：n-gram 策略变更（如 ④ harness 采纳的 bigram+trigram）必须让
+ * 旧索引失效重建，否则 df/倒排还是旧分词语义、新策略不生效（BM25_TOKENIZER_VERSION）。
+ * 已知边界：等长译文改写不触发重建（低频、可接受；重启或列表刷新即恢复）。
  */
-export function buildBm25Index(
-	allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[],
-	sig: string
-): Bm25Index {
-	const ids: string[] = [];
-	const docLen: number[] = [];
-	const postings = new Map<string, { idx: number[]; tf: number[] }>();
-	const df = new Map<string, number>();
-	const phrasePostings = new Map<string, { idx: number[]; tf: number[] }>();
-	const phraseDf = new Map<string, number>();
-	let totalLen = 0;
-	const exactPhrases = Array.from(
-		new Set(Object.values(PLUGIN_EXACT_PHRASES).flat().map((phrase) => t2sForEmbed(phrase).toLowerCase()))
-	).filter((phrase) => phrase.length > 0);
-
-	for (let di = 0; di < allPlugins.length; di++) {
-		const p = allPlugins[di];
-		ids.push(p.id);
-		const searchableText = t2sForEmbed(`${p.name} ${p.description}`).toLowerCase();
-		const tokens = tokenizeForBM25(searchableText);
-		docLen.push(tokens.length);
-		totalLen += tokens.length;
-
-		for (const phrase of exactPhrases) {
-			const tf = countPhraseOccurrences(searchableText, phrase);
-			if (tf === 0) continue;
-			let pl = phrasePostings.get(phrase);
-			if (!pl) {
-				pl = { idx: [], tf: [] };
-				phrasePostings.set(phrase, pl);
-			}
-			pl.idx.push(di);
-			pl.tf.push(tf);
-			phraseDf.set(phrase, (phraseDf.get(phrase) ?? 0) + 1);
-		}
-
-		// 单文档词频只在建索引时算一次（替代旧实现「每次查询 × 每条文档」重建 Map）
-		const localTf = new Map<string, number>();
-		for (const t of tokens) localTf.set(t, (localTf.get(t) ?? 0) + 1);
-		for (const [term, tf] of localTf) {
-			let pl = postings.get(term);
-			if (!pl) {
-				pl = { idx: [], tf: [] };
-				postings.set(term, pl);
-			}
-			pl.idx.push(di);
-			pl.tf.push(tf);
-			df.set(term, (df.get(term) ?? 0) + 1);
-		}
-	}
-
-	const N = allPlugins.length;
-	const avgdl = N > 0 ? totalLen / N : 0;
-	return { ids, docLen, postings, df, phrasePostings, phraseDf, N, avgdl, sig };
-}
-
-/** 统计连续短语出现次数；支持重叠出现，且不把两个分散词当作短语命中。 */
-function countPhraseOccurrences(text: string, phrase: string): number {
-	let count = 0;
-	let from = 0;
-	const asciiPhrase = /^[a-z0-9 _-]+$/i.test(phrase);
-	while (from <= text.length - phrase.length) {
-		const at = text.indexOf(phrase, from);
-		if (at < 0) break;
-		const before = at > 0 ? text[at - 1] : "";
-		const after = text[at + phrase.length] ?? "";
-		if (!asciiPhrase || (!/[a-z0-9]/i.test(before) && !/[a-z0-9]/i.test(after))) count++;
-		from = at + 1;
-	}
-	return count;
+function bm25IndexSig(
+	allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[]
+): string {
+	let zhLen = 0;
+	for (const p of allPlugins) zhLen += (p.nameZh?.length ?? 0) + (p.descZh?.length ?? 0);
+	return (
+		BM25_TOKENIZER_VERSION + ":" +
+		allPlugins.length + ":" +
+		(allPlugins[0]?.id ?? "") + ":" +
+		(allPlugins[allPlugins.length - 1]?.id ?? "") + ":" +
+		zhLen
+	);
 }
 
 /**
- * CJK 三元组 BM25 关键词召回（倒排索引版）。
- *
- * 只对「命中至少一个 query term」的文档累加分数，而非遍历全库 —— 复杂度从
- * O(文档数 × query 词数) 降到 O(命中 posting 数)。query 与文档都转简体（t2s）
- * 以保证与向量路同 token 空间；BM25 分数供 RRF 融合（只看排名）。
- *
- * @param topK 只保留前 topK 条（按 score 降序、同分按插件列表序）。RRF 只看名次，
- *   rank 500 之后对融合分的贡献已可忽略（见 RECALL_PATH_CAP），无需把全量命中
- *   都物化出来再交给下游排序。
+ * 构建 BM25 索引：对全量插件列表做简体转换 + CJK 分词 + 分场文档频率 df 统计。
+ * 标题场 = `name nameZh`，正文场 = `description descZh`（译文自此参与关键词路——
+ * 此前 BM25 只吃英文原文，中文 query 全靠同义词词典兜）。
+ * 该结果只依赖插件列表本身，与 query 无关，故可缓存跨多次搜索复用
+ * （连续输入触发多次 AI 搜索时避免对 6000 条反复分词，省数百 ms）。
  */
-export function bm25RecallScores(
+function buildBm25Index(
+	allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[]
+): Bm25Index {
+	const docTokensById = new Map<string, { title: string[]; body: string[] }>();
+	const dfTitle = new Map<string, number>();
+	const dfBody = new Map<string, number>();
+	let totalTitleLen = 0;
+	let totalBodyLen = 0;
+	for (const p of allPlugins) {
+		const titleTokens = tokenizeForBM25(t2sForEmbed(`${p.name} ${p.nameZh ?? ""}`));
+		const bodyTokens = tokenizeForBM25(t2sForEmbed(`${p.description} ${p.descZh ?? ""}`));
+		docTokensById.set(p.id, { title: titleTokens, body: bodyTokens });
+		totalTitleLen += titleTokens.length;
+		totalBodyLen += bodyTokens.length;
+		for (const t of new Set(titleTokens)) dfTitle.set(t, (dfTitle.get(t) ?? 0) + 1);
+		for (const t of new Set(bodyTokens)) dfBody.set(t, (dfBody.get(t) ?? 0) + 1);
+	}
+	const N = allPlugins.length;
+	return {
+		docTokensById,
+		dfTitle,
+		dfBody,
+		N,
+		avgdlTitle: N > 0 ? totalTitleLen / N : 0,
+		avgdlBody: N > 0 ? totalBodyLen / N : 0,
+		sig: bm25IndexSig(allPlugins),
+	};
+}
+
+/**
+ * CJK bigram+trigram BM25 关键词召回（标题/正文双场加权）：返回 Map<id, score>。
+ * score = TITLE_W × BM25(标题场) + BM25(正文场)，两场各用自己的 df/avgdl 统计。
+ * query 与文档都转简体（t2s）以保证与向量路同 token 空间；BM25 分数供 RRF 融合（只看排名）。
+ * index 由调用方缓存复用（见 AISearcher.getBm25Index），避免列表不变时重复分词。
+ */
+function bm25RecallScores(
 	query: string,
-	index: Bm25Index,
-	topK = Number.MAX_SAFE_INTEGER
+	index: Bm25Index
 ): Map<string, number> {
-	// query term 频次（含词表泛词降权）。只依赖 query，与文档无关，故算一次。
-	const queryTerms = expandQueryTerms(query.trim());
-	if (queryTerms.length === 0) return new Map();
-	const qtf = new Map<string, number>();
-	for (const { term, weight } of queryTerms) {
-		const token = t2sForEmbed(term);
-		// expandQueryTerms 已按 BM25 token 产出；这里仅做简繁归一，避免
-		// 词表模块和文档索引在传统字形上的分词空间不一致。
-		for (const normalized of tokenizeForBM25(token)) {
-			qtf.set(normalized, (qtf.get(normalized) ?? 0) + weight);
-		}
-	}
-
-	const { postings, df, N, avgdl, ids, docLen } = index;
-	const phrasePostings = index.phrasePostings ?? new Map<string, { idx: number[]; tf: number[] }>();
-	const phraseDf = index.phraseDf ?? new Map<string, number>();
-	const acc = new Map<number, number>(); // docIdx → 累计分
-	for (const [term, qtfCount] of qtf) {
-		const pl = postings.get(term);
-		if (!pl) continue;
-		// idf 只依赖 (term, df, N)：按 term 算一次，而不是放进文档循环里重复 Math.log
-		const w = qtfCount * bm25Idf(df.get(term) ?? 0, N);
-		const pIdx = pl.idx;
-		const pTf = pl.tf;
-		for (let k = 0; k < pIdx.length; k++) {
-			const d = pIdx[k];
-			const lenNorm = bm25LenNorm(docLen[d], avgdl);
-			acc.set(d, (acc.get(d) ?? 0) + w * bm25TermWeight(pTf[k], lenNorm));
-		}
-	}
-
-	// 精确短语单独走连续子串倒排。权重高于普通 term，但不影响裸泛词的召回。
-	for (const phrase of findMatchedExactPhrases(query.trim())) {
-		const normalized = t2sForEmbed(phrase).toLowerCase();
-		const pl = phrasePostings.get(normalized);
-		if (!pl) continue;
-		const w = 2.5 * bm25Idf(phraseDf.get(normalized) ?? 0, N);
-		for (let k = 0; k < pl.idx.length; k++) {
-			const d = pl.idx[k];
-			const lenNorm = bm25LenNorm(docLen[d], avgdl);
-			acc.set(d, (acc.get(d) ?? 0) + w * bm25TermWeight(pl.tf[k], lenNorm));
-		}
-	}
-
-	// 按 (score desc, docIdx asc) 排序。旧实现靠「按插件序插入 Map + 稳定排序」隐式
-	// 得到同一 tie-break，这里显式化，保证与旧实现逐条一致（含同分顺序）。
-	const entries = Array.from(acc.entries());
-	entries.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
-
 	const out = new Map<string, number>();
-	for (let i = 0; i < entries.length && out.size < topK; i++) {
-		const [d, s] = entries[i];
-		if (s > 0) out.set(ids[d], s);
+	// 同义词扩展：中文口语 → 英文别名（如"思维导图"→"mind map"），再 t2s 统一简体
+	const expanded = expandQuery(query.trim());
+	const q = t2sForEmbed(expanded);
+	const queryTokens = tokenizeForBM25(q);
+	if (queryTokens.length === 0) return out;
+	// 预计算 query term 频次（qtf 只依赖 query，批量打分每文档复用，避免重复重建 Map）
+	const qtf = new Map<string, number>();
+	for (const t of queryTokens) qtf.set(t, (qtf.get(t) ?? 0) + 1);
+
+	const { docTokensById, dfTitle, dfBody, N, avgdlTitle, avgdlBody } = index;
+	for (const [id, doc] of docTokensById) {
+		const titleScore = bm25Score(queryTokens, doc.title, dfTitle, N, avgdlTitle, 1.5, 0.75, qtf);
+		const bodyScore = bm25Score(queryTokens, doc.body, dfBody, N, avgdlBody, 1.5, 0.75, qtf);
+		const score = BM25_TITLE_W * titleScore + bodyScore;
+		if (score > 0) out.set(id, score);
 	}
 	return out;
 }
@@ -299,19 +185,7 @@ export class AISearcher {
 
 	/** BM25 索引缓存（跨多次搜索复用，列表不变则零重建，省去全量分词） */
 	private bm25Cache: Bm25Index | null = null;
-
-	/**
-	 * 最近一次搜索的分段计时快照（诊断用）。
-	 * null 表示本次会话尚未搜索过。供设置页 / 调试入口读取，回答「这次搜索慢在哪一步」。
-	 */
 	private lastSearchTiming: SearchTimingSnapshot | null = null;
-
-	/**
-	 * 上一次搜索是否重建了向量索引。
-	 * 用于识别「每次都重建」这类退化 —— 它不会体现在 localPhaseMs 里（向量索引属外部
-	 * 成本），但连续重建意味着缓存完全没复用上，是实打实的性能问题。
-	 */
-	private lastSearchRebuilt = false;
 
 	constructor(
 		aiConfig: AISearchConfig,
@@ -333,16 +207,7 @@ export class AISearcher {
 		});
 	}
 
-	/**
-	 * 更新插件标签数据（id → {category, tags}）。
-	 *
-	 * 调用时机是**分类标签文件加载完成时**（Translator.setPluginTags ← plugin.loadPluginTags），
-	 * 不是插件列表变化时——标签来自独立的 plugin-tags.json，与列表刷新无关。
-	 * （旧注释写成「allPlugins 变化时调用」，与实现不符，做 BM25 失效判定时容易被误导。）
-	 *
-	 * 标签变化会影响向量索引（category/tags 是 embedding 输入的一部分），该失效已由
-	 * shared/fingerprint 的 fields 指纹自动覆盖，无需在此手动清缓存。
-	 */
+	/** 更新插件标签数据（allPlugins 变化时调用） */
 	setPluginTags(tags: Record<string, { category: string; tags: string[] }>) {
 		this.pluginTags = tags;
 	}
@@ -353,66 +218,31 @@ export class AISearcher {
 	/** 从持久化恢复向量索引 */
 	setVectorIndex(vi: VectorIndex | null) { this.vectorIndex = vi; }
 
-	/** 最近一次搜索的分段计时快照（尚未搜索过时为 null）。返回拷贝，调用方改动不回写内部状态。 */
+	/** 最近一次搜索的计时快照，返回拷贝避免诊断面板修改内部状态。 */
 	getLastSearchTiming(): SearchTimingSnapshot | null {
 		const s = this.lastSearchTiming;
-		if (!s) return null;
-		return {
-			phases: s.phases.map((p) => ({ name: p.name, ms: p.ms })),
-			totalMs: s.totalMs,
-			counters: { ...s.counters },
-			at: s.at,
-		};
+		return s
+			? { phases: s.phases.map((p) => ({ ...p })), totalMs: s.totalMs, counters: { ...s.counters }, at: s.at }
+			: null;
+	}
+
+	private finishSearchTiming(timing: SearchTiming, label: string): void {
+		this.lastSearchTiming = timing.finish();
+		logger.debug(formatSearchTiming(this.lastSearchTiming, label));
 	}
 
 	/**
-	 * 计时收尾：存快照、输出单行结构化摘要，并在本地阶段偏慢时额外告警。
-	 *
-	 * 用 localPhaseMs（只统计我们自己的代码：关键词召回 / 标题模糊 / RRF 融合）而非总耗时：
-	 * LLM 精排受服务端影响，正常也能到秒级；embedding 走 API 时 query 编码同样是一次
-	 * HTTP 往返。用它们做阈值只会持续误报，最终训练出「忽略告警」的习惯。
-	 */
-	private finishTiming(timing: SearchTiming, label: string): void {
-		const snap = timing.finish();
-		this.lastSearchTiming = snap;
-		logger.debug(formatSearchTiming(snap, label));
-
-		const localMs = localPhaseMs(snap);
-		if (localMs > SLOW_LOCAL_MS) {
-			logger.warn(
-				`[Chinese Plugin Market] 本地检索阶段偏慢：${localMs.toFixed(0)}ms > 阈值 ${SLOW_LOCAL_MS}ms（仅统计关键词召回/标题模糊/RRF，不含 LLM 与 embedding 往返）· ` +
-					snap.phases.map((p) => `${p.name}=${p.ms.toFixed(1)}ms`).join(" · ")
-			);
-		}
-
-		// 连续两次都重建向量索引 → 缓存完全没复用上。向量索引属外部成本（embedding 调用），
-		// 不计入 localPhaseMs，故单独盯这一条 —— 它正是「模型 key 不一致」那类 bug 的表现。
-		const rebuilt = snap.counters[COUNTER_INDEX_REBUILT] === 1;
-		if (rebuilt && this.lastSearchRebuilt) {
-			logger.warn(
-				`[Chinese Plugin Market] 连续两次搜索都重建了向量索引 —— 索引未复用上。` +
-					`请检查 embedding 模型 / 分类体系版本是否每次都变化（见 shared/fingerprint.ts 的失效签名）。`
-			);
-		}
-		this.lastSearchRebuilt = rebuilt;
-	}
-
-	/**
-	 * 获取（或惰性构建并缓存）BM25 倒排索引。
-	 * 用内容指纹作失效签名：内容变化才重建，否则直接复用上一次的分词/倒排/df 统计结果，
-	 * 连续输入触发多次 AI 搜索时省去重复的全库分词开销。
-	 * （原先用「列表长度 + 首尾 id」判失效，无法察觉中间插件的描述变更。）
-	 *
-	 * @param precomputedSig 调用方若已在同一次遍历里算过指纹（见 search/localSearch 的
-	 *   computeIndexFingerprints 调用）可直接传入，省掉这里的第二次全库遍历。
+	 * 获取（或惰性构建并缓存）BM25 索引。
+	 * 失效签名 =「分词器版本指纹 + 列表长度 + 首尾 id + 译文长度指纹」（bm25IndexSig）：
+	 * 列表内容、译文到达或分词策略变更（BM25_TOKENIZER_VERSION）才重建，否则直接复用
+	 * 上一次的全量分词与 df 统计结果，连续输入触发多次 AI 搜索时省去重复的全库分词开销。
 	 */
 	getBm25Index(
-		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[],
-		precomputedSig?: string
+		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[]
 	): Bm25Index {
-		const sig = precomputedSig ?? computeIndexFingerprints(allPlugins).bm25;
+		const sig = bm25IndexSig(allPlugins);
 		if (this.bm25Cache && this.bm25Cache.sig === sig) return this.bm25Cache;
-		this.bm25Cache = buildBm25Index(allPlugins, sig);
+		this.bm25Cache = buildBm25Index(allPlugins);
 		return this.bm25Cache;
 	}
 
@@ -425,7 +255,7 @@ export class AISearcher {
 	 */
 	async search(
 		query: string,
-		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[],
+		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string; downloads?: number; updated?: number }[],
 		showReason = false,
 		onPhase?: (phase: string, detail: string) => void,
 		filterCategories?: string[],
@@ -433,130 +263,102 @@ export class AISearcher {
 		if (!this.aiConfig.apiKey && !isLocalBaseUrl(this.aiConfig.baseURL))
 			throw new Error("NO_API_KEY");
 		if (!allPlugins.length) throw new Error("无插件数据，请先加载列表");
-
-		// 整条管线用 finally 收尾：即使中途抛错（无结果 / LLM 失败）也要留下耗时构成，
-		// 「失败发生在哪一步」本身就是排查的关键信息。
+		const tStart = Date.now();
 		const timing = SearchTiming.start();
-		try {
-			// ── 召回：混合召回链（向量语义 RRF 融合 本地关键词 → LLM 兜底）──
-			let merged: AISearchCandidate[] = [];
 
-			const embCfg = this.aiConfig.embedding;
-			const useVector = embCfg && embCfg.source !== "keyword";
+		// ── 召回：混合召回链（向量语义 RRF 融合 本地关键词 → LLM 兜底）──
+		let merged: AISearchCandidate[] = [];
 
-			// 两个索引的失效签名单趟算出（见 shared/fingerprint.ts；实测约 1.7~1.9x，实验 6）。
-			// 分类/标签经访问器从 pluginTags 直接取，不构造中间对象——否则每次搜索要分配
-			// 6000 个临时对象，正是刚在 BM25 上修掉的那类反模式。
-			const fingerprints = computeIndexFingerprints(allPlugins, (p) => this.pluginTags[p.id]);
+		const embCfg = this.aiConfig.embedding;
+		const useVector = embCfg && embCfg.source !== "keyword";
 
-			// 向量召回（带分数，供 RRF 融合）
-			let vectorScores: Map<string, number> | null = null;
-			if (useVector) {
-				try {
-					// 不要在这里再包一层 measure：vectorRecallScores 内部已用 measure 记
-					// 「向量索引」「query 编码+余弦」。外层再包一层会让 localPhaseMs 把整段
-					// 向量耗时算两遍（曾导致慢查询告警在开启向量搜索时虚报）。
-					vectorScores = await this.vectorRecallScores(
-						query,
-						allPlugins,
-						embCfg,
-						timing,
-						onPhase,
-						filterCategories,
-						fingerprints.fields,
-					);
-				} catch (e: unknown) {
-					logger.warn("[Chinese Plugin Market] 向量召回失败，降级到纯关键词：", e);
-					vectorScores = null;
-				}
+		// 向量召回（带分数，供 RRF 融合）
+		let vectorScores: Map<string, number> | null = null;
+		if (useVector) {
+			try {
+				vectorScores = await this.vectorRecallScores(query, allPlugins, embCfg, onPhase, filterCategories);
+			} catch (e: unknown) {
+				logger.warn("[Chinese Plugin Market] 向量召回失败，降级到纯关键词：", e);
+				vectorScores = null;
 			}
-
-			// 关键词召回（CJK 三元组 BM25 + 同义词 + t2s，对齐本地语义模式）
-			onPhase?.("本地召回", "正在本地粗筛候选…");
-			const localScores = await timing.measure(PHASE.keyword, () =>
-				bm25RecallScores(query, this.getBm25Index(allPlugins, fingerprints.bm25), RECALL_PATH_CAP)
-			);
-
-			// 标题模糊匹配（第三路）：兜住「用户只记得名字大概」的场景
-			const fuzzyScores = await timing.measure(PHASE.fuzzy, () =>
-				fuzzyTitleScores(query, allPlugins)
-			);
-
-			// RRF 融合：向量 + 关键词 + 标题模糊 三路名次融合（异构分数量纲不同，RRF 只看名次，
-			// 比「并集取前 N」更稳；多路都命中的候选自然靠前，减少 LLM 精排负担）。
-			const fusedIds = await timing.measure(PHASE.rrf, () => {
-				if (vectorScores && vectorScores.size > 0) {
-					// 向量路可用：三路融合（模糊权重低一些，作 tie-break）
-					const fused = rrfFuse([vectorScores, localScores, fuzzyScores], [1.0, 1.0, 0.5]);
-					return topNFused(fused, CANDIDATE_POOL_CAP).map((x) => x.id);
-				}
-				// 向量路不可用：关键词 + 标题模糊 两路融合
-				const fused = rrfFuse([localScores, fuzzyScores], [1.0, 0.5]);
-				return topNFused(fused, CANDIDATE_POOL_CAP).map((x) => x.id);
-			});
-
-			const idToPlugin = new Map(allPlugins.map((p) => [p.id, p]));
-			const union: AISearchCandidate[] = [];
-			for (const id of fusedIds) {
-				const p = idToPlugin.get(id);
-				if (p) {
-					const tag = this.pluginTags[id];
-					union.push({ id: p.id, name: p.name, description: p.description, category: tag?.category });
-				}
-			}
-			merged = union;
-
-			timing.count("插件数", allPlugins.length);
-			timing.count("向量命中", vectorScores?.size ?? 0);
-			timing.count("关键词命中", localScores.size);
-			timing.count("标题命中", fuzzyScores.size);
-
-			// LLM 兜底召回
-			if (merged.length === 0) {
-				merged = await timing.measure(PHASE.llmFallback, () =>
-					this.recallAllBatches(query, allPlugins, onPhase)
-				);
-			}
-			timing.count("候选池", merged.length);
-
-			if (merged.length === 0) {
-				throw new Error("未找到相关插件，请尝试更换搜索词");
-			}
-
-			const exp = this.buildExplainability(query, vectorScores, localScores, fuzzyScores);
-
-			let result: AISearchResult;
-			if (merged.length < 2) {
-				// 候选太少，直接用原始 description 做精排
-				if (merged.length === 1) {
-					const full = allPlugins.find((p) => p.id === merged[0].id);
-					if (full) merged[0].description = full.description;
-				}
-				result = await timing.measure(PHASE.llmRank, () =>
-					this.rankTopOrFallback(query, merged, showReason, () =>
-						onPhase?.("精排", `共 ${merged.length} 条候选`)
-					, exp)
-				);
-			} else {
-				// 补齐 description
-				const idToDesc = new Map<string, string>();
-				for (const p of allPlugins) idToDesc.set(p.id, p.description);
-				for (const c of merged) {
-					c.description = idToDesc.get(c.id) || c.description || "";
-				}
-				onPhase?.("精排", `共 ${merged.length} 条候选`);
-				result = await timing.measure(PHASE.llmRank, () =>
-					this.rankTopOrFallback(query, merged, showReason, undefined, exp)
-				);
-			}
-
-			// 精排结果以计数器呈现（原先用两条 logger.debug 表达同一信息）
-			timing.count("精排降级", result.rankFallback ? 1 : 0);
-			timing.count("结果数", result.rankedIds.length);
-			return result;
-		} finally {
-			this.finishTiming(timing, `AI 搜索 query="${query}"`);
 		}
+
+		// 关键词召回（CJK bigram+trigram BM25 + 同义词 + t2s，对齐本地语义模式）
+		onPhase?.("本地召回", "正在本地粗筛候选…");
+		const localScores = bm25RecallScores(query, this.getBm25Index(allPlugins));
+		timing.mark("关键词召回");
+
+		// 标题模糊匹配（第三路）：兜住「用户只记得名字大概」的场景
+		const fuzzyScores = fuzzyTitleScores(query, allPlugins);
+		timing.mark("标题模糊");
+
+		// RRF 融合：向量 + 关键词 + 标题模糊 三路名次融合（异构分数量纲不同，RRF 只看名次，
+		// 比「并集取前 N」更稳；多路都命中的候选自然靠前，减少 LLM 精排负担）。
+		// 融合分再乘质量因子（recency×popularity，带宽 [0.85,1.15]）：平局区让
+		// 「还在维护的、用的人多的」上位；AI 模式下只影响候选池入选与截断，精排保持纯相关性。
+		let fusedIds: string[];
+		if (vectorScores && vectorScores.size > 0) {
+			// 向量路可用：三路融合（模糊权重低一些，作 tie-break）
+			const fused = applyQualityFactors(rrfFuse([vectorScores, localScores, fuzzyScores], [1.0, 1.0, 0.5]), allPlugins);
+			fusedIds = topNFused(fused, CANDIDATE_POOL_CAP).map((x) => x.id);
+		} else {
+			// 向量路不可用：关键词 + 标题模糊 两路融合
+			const fused = applyQualityFactors(rrfFuse([localScores, fuzzyScores], [1.0, 0.5]), allPlugins);
+			fusedIds = topNFused(fused, CANDIDATE_POOL_CAP).map((x) => x.id);
+		}
+		timing.mark("RRF 融合");
+
+		const idToPlugin = new Map(allPlugins.map((p) => [p.id, p]));
+		const union: AISearchCandidate[] = [];
+		for (const id of fusedIds) {
+			const p = idToPlugin.get(id);
+			if (p) {
+				const tag = this.pluginTags[id];
+				union.push({ id: p.id, name: p.name, description: p.description, category: tag?.category });
+			}
+		}
+		merged = union;
+		logger.debug(
+			`[Chinese Plugin Market] AI 搜索召回：query="${query}" · 向量命中=${vectorScores?.size ?? 0} · ` +
+				`关键词命中=${localScores.size} · 标题模糊命中=${fuzzyScores.size} · ` +
+				`RRF 融合后候选=${merged.length}（${Date.now() - tStart}ms）`
+		);
+
+		// LLM 兜底召回
+		if (merged.length === 0) {
+			merged = await this.recallAllBatches(query, allPlugins, onPhase);
+		}
+
+		if (merged.length === 0) {
+			throw new Error("未找到相关插件，请尝试更换搜索词");
+		}
+
+		if (merged.length < 2) {
+			// 候选太少，直接用原始 description 做精排
+			if (merged.length === 1) {
+				const full = allPlugins.find((p) => p.id === merged[0].id);
+				if (full) merged[0].description = full.description;
+			}
+			const exp = this.buildExplainability(query, vectorScores, localScores, fuzzyScores);
+			const result = await this.rankTopOrFallback(query, merged, showReason, () =>
+				onPhase?.("精排", `共 ${merged.length} 条候选`)
+			, exp);
+			this.finishSearchTiming(timing, `AI 搜索 query="${query}"`);
+			return result;
+		}
+
+		// 补齐 description
+		const idToDesc = new Map<string, string>();
+		for (const p of allPlugins) idToDesc.set(p.id, p.description);
+		for (const c of merged) {
+			c.description = idToDesc.get(c.id) || c.description || "";
+		}
+
+		const exp = this.buildExplainability(query, vectorScores, localScores, fuzzyScores);
+		onPhase?.("精排", `共 ${merged.length} 条候选`);
+		const result = await this.rankTopOrFallback(query, merged, showReason, undefined, exp);
+		this.finishSearchTiming(timing, `AI 搜索 query="${query}"`);
+		return result;
 	}
 
 	/**
@@ -568,72 +370,54 @@ export class AISearcher {
 	 */
 	async localSearch(
 		query: string,
-		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[],
+		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string; downloads?: number; updated?: number }[],
 		filterCategories?: string[],
 	): Promise<AISearchResult> {
 		if (!allPlugins.length) throw new Error("无插件数据，请先加载列表");
-
+		const tStart = Date.now();
 		const timing = SearchTiming.start();
-		try {
-			const embCfg = this.aiConfig.embedding;
-			const useVector = embCfg && embCfg.source !== "keyword";
 
-			// 与 search() 同理：单趟算出两个索引的失效签名
-			const fingerprints = computeIndexFingerprints(allPlugins, (p) => this.pluginTags[p.id]);
+		const embCfg = this.aiConfig.embedding;
+		const useVector = embCfg && embCfg.source !== "keyword";
 
-			// 向量召回（带分数）
-			let vectorScores: Map<string, number> | null = null;
-			if (useVector) {
-				try {
-					// 同 search()：不在此再包一层 measure，避免向量耗时被 localPhaseMs 双计
-					vectorScores = await this.vectorRecallScores(
-						query,
-						allPlugins,
-						embCfg,
-						timing,
-						undefined,
-						filterCategories,
-						fingerprints.fields,
-					);
-				} catch (e: unknown) {
-					logger.warn("[Chinese Plugin Market] 本地语义：向量召回失败，降级关键词+标题：", e);
-					vectorScores = null;
-				}
+		// 向量召回（带分数）
+		let vectorScores: Map<string, number> | null = null;
+		if (useVector) {
+			try {
+				vectorScores = await this.vectorRecallScores(query, allPlugins, embCfg, undefined, filterCategories);
+			} catch (e: unknown) {
+				logger.warn("[Chinese Plugin Market] 本地语义：向量召回失败，降级关键词+标题：", e);
+				vectorScores = null;
 			}
-
-			// 关键词召回（CJK 三元组 BM25，替代简单重叠）+ 标题模糊
-			const localScores = await timing.measure(PHASE.keyword, () =>
-				bm25RecallScores(query, this.getBm25Index(allPlugins, fingerprints.bm25), RECALL_PATH_CAP)
-			);
-			const fuzzyScores = await timing.measure(PHASE.fuzzy, () =>
-				fuzzyTitleScores(query, allPlugins)
-			);
-
-			// RRF 融合（与 AI 模式召回一致；向量不可用时退化为关键词+标题）
-			const fusedIds = await timing.measure(PHASE.rrf, () => {
-				if (vectorScores && vectorScores.size > 0) {
-					return topNFused(
-						rrfFuse([vectorScores, localScores, fuzzyScores], [1.0, 1.0, 0.5]),
-						CANDIDATE_POOL_CAP
-					).map((x) => x.id);
-				}
-				return topNFused(
-					rrfFuse([localScores, fuzzyScores], [1.0, 0.5]),
-					CANDIDATE_POOL_CAP
-				).map((x) => x.id);
-			});
-
-			timing.count("插件数", allPlugins.length);
-			timing.count("向量命中", vectorScores?.size ?? 0);
-			timing.count("关键词命中", localScores.size);
-			timing.count("标题命中", fuzzyScores.size);
-			timing.count("结果数", fusedIds.length);
-
-			const exp = this.buildExplainability(query, vectorScores, localScores, fuzzyScores);
-			return { rankedIds: fusedIds, rankFallback: true, ...exp };
-		} finally {
-			this.finishTiming(timing, `本地语义 query="${query}"`);
 		}
+
+		// 关键词召回（CJK bigram+trigram BM25，替代简单重叠）+ 标题模糊
+		const localScores = bm25RecallScores(query, this.getBm25Index(allPlugins));
+		timing.mark("关键词召回");
+		const fuzzyScores = fuzzyTitleScores(query, allPlugins);
+		timing.mark("标题模糊");
+
+		// RRF 融合（与 AI 模式召回一致；向量不可用时退化为关键词+标题）。
+		// 质量因子在此直接塑造最终排序（本地模式无 LLM 精排，是它的主战场）。
+		const fused = applyQualityFactors(
+			vectorScores && vectorScores.size > 0
+				? rrfFuse([vectorScores, localScores, fuzzyScores], [1.0, 1.0, 0.5])
+				: rrfFuse([localScores, fuzzyScores], [1.0, 0.5]),
+			allPlugins
+		);
+		const fusedIds = topNFused(fused, CANDIDATE_POOL_CAP).map((x) => x.id);
+		timing.mark("RRF 融合");
+
+		logger.debug(
+			`[Chinese Plugin Market] 本地语义搜索：query="${query}" · 向量命中=${vectorScores?.size ?? 0} · ` +
+				`关键词命中=${localScores.size} · 标题模糊命中=${fuzzyScores.size} · ` +
+				`融合后=${fusedIds.length}（${Date.now() - tStart}ms）`
+		);
+
+		const exp = this.buildExplainability(query, vectorScores, localScores, fuzzyScores);
+		const result = { rankedIds: fusedIds, rankFallback: true, ...exp };
+		this.finishSearchTiming(timing, `本地语义 query="${query}"`);
+		return result;
 	}
 
 	/** AI 深度对比（基于真实信号：commands / 依赖 / 标签 / README，不单靠描述） */
@@ -683,10 +467,8 @@ export class AISearcher {
 		query: string,
 		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[],
 		embCfg: NonNullable<AISearchConfig["embedding"]>,
-		timing: SearchTiming,
 		onPhase?: (phase: string, detail: string) => void,
 		filterCategories?: string[],
-		precomputedFieldsHash?: string,
 	): Promise<Map<string, number> | null> {
 		const provider: EmbeddingProvider = createEmbeddingProvider({
 			source: embCfg.source,
@@ -725,6 +507,7 @@ export class AISearcher {
 				descZh: p.descZh,
 			};
 		});
+		const fieldsHash = computeIndexFingerprints(indexPlugins, (p) => p).fields;
 
 		const needBuild =
 			!this.vectorIndex ||
@@ -734,41 +517,37 @@ export class AISearcher {
 			// partial = 后台动态构建中的部分索引：直接用（它在生长），不触发重建抢 embed
 			(!this.vectorIndex.partial && this.vectorIndex.ids.length !== allPlugins.length);
 
+		// 探针：打印 needBuild 各判定分支，便于定位「每次搜索都重建」的根因
+		logger.debug(
+			`[Chinese Plugin Market] 探针：needBuild 判定 → ` +
+				`vectorIndex空=${!this.vectorIndex} · model(${this.vectorIndex?.model}≠${indexModel})=${this.vectorIndex?.model !== indexModel} · ` +
+				`ids长度(${this.vectorIndex?.ids.length}≠${allPlugins.length})=${this.vectorIndex?.ids.length !== allPlugins.length} · ` +
+				`schema(${this.vectorIndex?.categorySchemaVersion}≠${this.tagService.getSchemaVersion()})=${this.vectorIndex?.categorySchemaVersion !== this.tagService.getSchemaVersion()}`
+		);
+
 		onPhase?.("向量召回", needBuild ? "正在构建向量索引…" : "正在计算语义相似度…");
 
-		// 索引构建与 query 编码分开计时：两者成本量级完全不同（重建要 embed 数千条，
-		// 复用只需 embed 一次 query），混在一起会把「索引没复用上」这类问题掩盖掉。
-		const prevIndex = this.vectorIndex;
-		const built = await timing.measure(PHASE.vectorIndex, () => {
-			if (prevIndex?.partial && !needBuild) return Promise.resolve(prevIndex);
-			return buildVectorIndex(
-				provider,
-				indexPlugins,
-				indexModel!,
-				prevIndex,
-				this.tagService.getSchemaVersion(),
-				{ precomputedFieldsHash, embeddingIdentity },
-			);
-		});
-		this.vectorIndex = built;
-		// 用引用是否变化判断「真的重建了」——needBuild 只是快速判定，buildVectorIndex
-		// 内部还会因内容指纹变化而重建，两者不等价。
-		const rebuilt = built !== prevIndex;
-		timing.count(COUNTER_INDEX_REBUILT, rebuilt ? 1 : 0);
-		if (rebuilt) {
-			// 重建是低频事件（列表/模型/分类体系变化才发生）。只在真的重建时记一条明细，
-			// 用于回答「这次为什么重建」——替代原先每次搜索都打印的 needBuild 分支探针。
-			logger.debug(
-				`[Chinese Plugin Market] 向量索引已重建：needBuild=${needBuild} · 模型=${indexModel} · 插件数=${allPlugins.length}`
-			);
-		}
+		const tBuild = Date.now();
+		this.vectorIndex = await buildVectorIndex(
+			provider,
+			indexPlugins,
+			indexModel!,
+			this.vectorIndex,
+			this.tagService.getSchemaVersion(),
+			fieldsHash,
+			embeddingIdentity,
+		);
+		const buildMs = Date.now() - tBuild;
 
 		const anchoredQuery = filterCategories?.length
 			? `分类：${filterCategories.join(" / ")}\n${query}`
 			: query;
 
-		const scored = await timing.measure(PHASE.queryEncode, () =>
-			vectorRecallScores(provider, anchoredQuery, built, VECTOR_RECALL_CAP, VECTOR_MIN_SCORE)
+		const tRecall = Date.now();
+		const scored = await vectorRecallScores(provider, anchoredQuery, this.vectorIndex, VECTOR_RECALL_CAP, VECTOR_MIN_SCORE);
+		const recallMs = Date.now() - tRecall;
+		logger.debug(
+			`[Chinese Plugin Market] 向量召回性能：needBuild=${needBuild} · 索引构建/复用=${buildMs}ms · query embed+余弦=${recallMs}ms · 插件数=${allPlugins.length}`
 		);
 		if (!scored) return null;
 
@@ -977,7 +756,9 @@ ${candidateLines}
 	): Promise<AISearchResult> {
 		try {
 			const r = await this.rankTop(query, candidates, showReason, onPhase, extra?.signals);
-			// 成功/降级由调用方的计时计数器呈现（精排降级=0/1），此处不再单独打日志
+			logger.debug(
+				`[Chinese Plugin Market] AI 精排完成：候选=${candidates.length} → 命中=${r.rankedIds.length}（LLM 精排成功）`
+			);
 			return { ...r, ...extra };
 		} catch (e: unknown) {
 			logger.warn(
@@ -986,6 +767,9 @@ ${candidateLines}
 			);
 			// 混合召回顺序：向量命中的语义相关项在前，关键词命中补在后，
 			// 本身就是合理的「相关度降序」，无需任何网络调用。
+			logger.debug(
+				`[Chinese Plugin Market] AI 精排降级：候选=${candidates.length} → 回退本地召回序`
+			);
 			return { rankedIds: candidates.map((c) => c.id), rankFallback: true, ...extra };
 		}
 	}
@@ -1003,7 +787,7 @@ ${candidateLines}
 		fuzzyScores: Map<string, number>,
 		llmIds?: Set<string>,
 	): { highlightTerms: string[]; signals: Record<string, string[]> } {
-		// 高亮词：query 分词（CJK 三元组 + ASCII 词）+ 同义词扩展
+		// 高亮词：query 分词（CJK bigram+trigram + ASCII 词）+ 同义词扩展
 		const baseTokens = tokenizeForBM25(query).map((t) => t.toLowerCase());
 		const expanded = expandQuery(query).toLowerCase();
 		const synonymTokens = tokenizeForBM25(expanded).map((t) => t.toLowerCase());

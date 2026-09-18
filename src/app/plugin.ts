@@ -6,15 +6,20 @@
  * 视图本身由 translator-view.ts 的 ChinesePluginMarketView 承载。
  */
 
-import { Plugin, Notice, Menu, TFile, normalizePath, type App } from "obsidian";
+import { Plugin, Notice, Menu, TFile, Platform, normalizePath, type App } from "obsidian";
 
 /** Obsidian App 在 types 中未暴露、但运行时存在的辅助方法 */
 interface AppWithDefaultApp extends App {
 	openWithDefaultApp(path: string): void;
 }
-import { DirectInstallModal } from "@app/direct-install";
+
+/** 模块级 i18n 帮助函数（各方法内也可局部 const t = makeT()） */
+const t = makeT();
+import { DirectInstallModal, type BetaPluginEntry, type InstalledInfo } from "@app/direct-install";
+import { updateAllBetaPlugins, updateBetaEntry } from "@app/beta-updater";
 import { logger } from "@shared/logger";
 import { Translator, type PluginInfo, type TranslateResult, type DictEntry } from "@domain/catalog/translator";
+import { SettingsTranslator } from "@translation/settings/settings-translator";
 import { type PluginStat } from "@domain/catalog/stats";
 import { PluginStorage, CREDENTIAL_KEYS, type PluginCredentials } from "@data/storage/plugin-storage";
 import { setHttpClient, getHttpClient } from "@data/net/http-port";
@@ -26,7 +31,7 @@ import {
 	ObsidianNoteStorage,
 	obsidianPlatformCapability,
 } from "@app/obsidian-adapters";
-import { makeT } from "@shared/i18n";
+import { makeT, pickLang } from "@shared/i18n";
 import { setScrollDebug } from "@ui/view/view-render";
 import { isMobileEnvironment } from "@shared/platform";
 import { TranslatorSettingTab } from "@app/settings-tab";
@@ -46,6 +51,23 @@ import { parseJournalNote, renderJournalNote, type JournalEntry } from "@domain/
 import { computeJournalStats, buildVerdictIndex, type JournalStats } from "@domain/journal/journal-stats";
 import { JournalView, JOURNAL_VIEW_TYPE } from "@ui/view/journal-view";
 import type { DrawerHostPlugin } from "@ui/components/detail-drawer";
+import { SettingsIntegrationController } from "@app/settings-integration/settings-integration-controller";
+import type { ManageStorePort } from "@ui/settings/manage-store";
+import type { CssStorePort } from "@ui/settings/snippet-manage-store";
+import type { GroupManageType, GroupManageStore } from "@ui/settings/group-manage-store";
+import { GroupManagementModal } from "@ui/settings/group-management-modal";
+import { normalizeManageSettings } from "@domain/manage/group";
+import { setMeta } from "@domain/manage/plugin-meta";
+import { asAppInternals } from "@data/platform/obsidian-internals";
+import {
+	listSnippets,
+	refreshSnippets,
+	setSnippetEnabled,
+	renameSnippet,
+	openSnippetInDefaultApp,
+	isSnippetEnabled,
+} from "@data/platform/snippet";
+import { SnippetRenameModal } from "@ui/settings/snippet-rename-modal";
 /** Translator.loadData 的入参结构（避免导入未导出的内部类型） */
 type LoadDataRaw = NonNullable<Parameters<Translator["loadData"]>[0]>;
 /** Translator.setPluginTags 的入参结构 */
@@ -53,6 +75,8 @@ type PluginTagMap = NonNullable<Parameters<Translator["setPluginTags"]>[0]>;
 export default class ChinesePluginMarketPlugin extends Plugin {
 	settings: ChinesePluginMarketSettings = getDefaultSettings();
 	translator: Translator = new Translator();
+	/** 设置页即时机翻钩子（按需创建，启用时挂载全局原型补丁） */
+	settingsTranslator: SettingsTranslator | null = null;
 	/** 落盘 stats 缓存（onload 时恢复，供视图首屏合并，产品改进 #1 #6） */
 	cachedStats: Map<string, PluginStat> | null = null;
 	/** 趋势采样历史（onload 时恢复，视图的 TrendingEngine 从此水合；跨会话才有真实增速） */
@@ -69,6 +93,12 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	journalStats: JournalStats | null = null;
 	/** 弃用原因 → 插件 id 集合索引（来自评测笔记 verdict，供踩坑 Top 点击联动筛选） */
 	journalVerdictIds: Map<string, Set<string>> = new Map();
+	/** 设置页增强控制器（增强原生「设置 → 社区插件」页）；未启用或不支持时为 null */
+	settingsIntegration: SettingsIntegrationController | null = null;
+	/** 已注册的「切换插件」命令 id（插件增删后整体刷新） */
+	private pluginToggleCommandIds: string[] = [];
+	/** 已注册的「切换 CSS 片段」命令 id（片段增删后整体刷新） */
+	private cssToggleCommandIds: string[] = [];
 
 	/**
 	 * 记录一次安装/卸载 diff 到历史索引（评测台账）。fire-and-forget：失败只 warn，
@@ -99,6 +129,8 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		} catch (e: unknown) {
 			logger.warn("[Chinese Plugin Market] 记录安装历史失败：", e);
 		}
+		// 插件增删后同步「切换插件」命令列表（仅在有安装/卸载 diff 时触发，频率极低）
+		this.refreshPluginToggleCommands();
 	}
 
 	/** 评测台账是否启用（默认开启；预留开关位供后续设置页接入） */
@@ -386,8 +418,8 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 						},
 						(e) => {
 							window.clearTimeout(t);
-							reject(e);
-						}
+							reject(e instanceof Error ? e : new Error(String(e)));
+							}
 					);
 				});
 			// ── 源可用性探测（10 分钟缓存）──
@@ -574,6 +606,8 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			void this.initDeferredLoad().catch((e) =>
 				logger.error("[Chinese Plugin Market] 延迟初始化失败：", e),
 			);
+			// 启动自动更新直链 Beta 插件（静默，仅在有变化时汇总；移动端跳过）
+			if (this.settings.betaAutoUpdate) this.runBetaAutoUpdate();
 		});
 
 		// 注册视图
@@ -604,6 +638,35 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			name: t("journal.openCmd"),
 			callback: () => {
 				void this.openJournalView();
+			},
+		});
+
+		// 命令：打开已装插件管理（增强后的原生「设置 → 社区插件」页）
+		this.addCommand({
+			id: "open-plugin-manager",
+			name: t("manage.openCmd"),
+			callback: () => this.openCommunityPluginsSettings(),
+		});
+
+		// 命令：从直链安装插件（命令面板直达，与 ribbon 菜单入口一致）
+		this.addCommand({
+			id: "direct-install-plugin",
+			name: t("directInstall.menu"),
+			callback: () => {
+				new DirectInstallModal(this.app, "plugin", (info: InstalledInfo) =>
+					this.recordBetaInstall(info),
+				).open();
+			},
+		});
+
+		// 命令：从直链安装主题
+		this.addCommand({
+			id: "direct-install-theme",
+			name: t("beta.title.theme"),
+			callback: () => {
+				new DirectInstallModal(this.app, "theme", (info: InstalledInfo) =>
+					this.recordBetaInstall(info),
+				).open();
 			},
 		});
 
@@ -717,6 +780,21 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 		// 设置面板
 		this.addSettingTab(new TranslatorSettingTab(this.app, this));
+
+		// 已装插件管理：增强原生「设置 → 社区插件」页。
+		// 等布局就绪再启动，避免与 Obsidian 启动期的设置面板初始化竞争；
+		// 卸载时 register 自动停止（恢复 patch、移除注入）。
+		this.app.workspace.onLayoutReady(() => {
+			this.startSettingsIntegration();
+			// 为每个已安装插件注册「切换插件」命令（插件增删后由 recordInstallDiff 刷新）
+			this.refreshPluginToggleCommands();
+			// CSS 片段名单异步预扫（配置目录不进 vault 文件树），再注册「切换片段」命令
+			void this.reloadCssSnippets();
+			});
+		this.register(() => {
+			this.settingsIntegration?.stop();
+			this.settingsIntegration = null;
+		});
 	}
 
 	/**
@@ -902,7 +980,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	 * 使视图用最终数据呈现（消除「重启后短暂英文、随后跳变中文」的闪烁）。
 	 */
 	private async initDeferredLoad() {
-		// 预热本地 embedding（桌面端 local 模式）：提前启动 worker + 加载 e5 模型，
+		// 预热本地 embedding（local 模式）：提前启动 worker + 加载 bge 模型（~110MB），
 		// 让首次本地语义搜索免冷启动。放在延迟初始化最前面（本方法已在 onLayoutReady 后
 		// 执行，Worker 创建时序已安全），使模型下载与下方 scanVaultTM / loadVectorIndex
 		// 的重 IO 并行，而非等它们串行完成后再开始——缩短首次搜索的实际等待。
@@ -993,11 +1071,30 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		}
 	}
 
+	/** 懒创建设置页翻译器（仅创建实例，不立即挂载全局原型补丁） */
+	ensureSettingsTranslator(): void {
+		if (this.settingsTranslator) return;
+		this.settingsTranslator = new SettingsTranslator(this.app, this.translator, () => ({
+			enabled: this.settings.translateSettingsEnabled,
+			provider: this.settings.translateSettingsProvider,
+			blacklist: this.settings.translateSettingsBlacklist
+				.split(/[,\s]+/)
+				.map((s) => s.trim())
+				.filter(Boolean),
+		}));
+	}
+
 	onunload() {
+		// 卸载设置页翻译钩子并回写缓存（优先于落盘逻辑，确保缓存进入 data.json）
+		if (this.settingsTranslator) {
+			this.settingsTranslator.disable();
+			if (this.settings) this.settings.settingsTranslateCache = this.settingsTranslator.exportCache();
+		}
 		// 防抖窗口内的未落盘变更不能直接丢弃（曾只 clearTimeout，导致刚编辑的
 		// 词典 / TM 脏条目 / 埋点在禁用或更新插件时静默丢失）：
 		// 取消定时器后立即启动一次落盘（onunload 不能 await，fire-and-forget）。
-		const pendingSettings = this._saveSettingsDebounce.pending();
+		const persistCache = this.settingsTranslator != null;
+		const pendingSettings = this._saveSettingsDebounce.pending() || persistCache;
 		const pendingTranslator = this._saveTranslatorDataTimer != null;
 		if (this._saveTranslatorDataTimer) {
 			window.clearTimeout(this._saveTranslatorDataTimer);
@@ -1216,7 +1313,21 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			item
 				.setTitle(t("directInstall.menu"))
 				.setIcon("download")
-				.onClick(() => new DirectInstallModal(this.app).open())
+				.onClick(() =>
+					new DirectInstallModal(this.app, "plugin", (info: InstalledInfo) =>
+						this.recordBetaInstall(info),
+					).open(),
+				)
+		);
+		menu.addItem((item) =>
+			item
+				.setTitle(t("beta.title.theme"))
+				.setIcon("palette")
+				.onClick(() =>
+					new DirectInstallModal(this.app, "theme", (info: InstalledInfo) =>
+						this.recordBetaInstall(info),
+					).open(),
+				)
 		);
 		menu.addSeparator();
 		menu.addItem((item) =>
@@ -1257,6 +1368,17 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		// 收藏筛选改为会话级（不持久化），字段已从 settings 移除：
 		// 旧版残留的 favoriteFilter（boolean 或枚举）随 Object.assign 丢弃，不再迁移
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+		// 已装插件管理：旧数据缺字段/子字段不全时统一规范化，
+		// 同时切断对 DEFAULT_SETTINGS.manage 的浅合并共享引用（否则改动会污染默认常量）。
+		this.settings.manage = normalizeManageSettings(this.settings.manage);
+		// 直链 Beta 跟踪表：旧数据缺字段/类型不对时兜底为空数组，避免遍历报错
+		if (!Array.isArray(this.settings.betaPlugins)) this.settings.betaPlugins = [];
+		// 设置页即时机翻：用户开启则挂载钩子并载入缓存
+		if (this.settings.translateSettingsEnabled) {
+			this.ensureSettingsTranslator();
+			this.settingsTranslator!.loadCache(this.settings.settingsTranslateCache);
+			this.settingsTranslator!.enable();
+		}
 		// PERF-7：credentials 与 favorites 两个独立文件无依赖，并行读取缩短启动耗时。
 		const [creds, loadedFavorites] = await Promise.all([
 			this.storage.loadCredentials(),
@@ -1319,14 +1441,11 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				this.settings.embeddingLocalModel = DEFAULT_LOCAL_MODEL;
 			}
 		}
-		// embeddingSource 默认值迁移：桌面端旧默认是 "keyword"，升级后迁移到
-		// "local" 以启用本地语义。移动端明确保留/归一为 keyword，避免旧配置触发
-		// 本地模型下载；API 模式仍按用户配置保留。
+		// 桌面端旧默认 keyword 升级到 local；移动端保留关键词模式，避免模型下载。
 		if (!isMobileEnvironment() && this.settings.embeddingSource === "keyword") {
 			this.settings.embeddingSource = "local";
 		}
-		// 移动端不支持本地语义：不仅新安装默认 keyword，已有 local 配置也必须
-		// 归一为 keyword，防止升级后自动预热/搜索路径下载模型。
+		// 移动端统一禁止本地语义，包括已有 local 配置，防止升级后预热或搜索下载模型。
 		if (isMobileEnvironment() && this.settings.embeddingSource === "local") {
 			this.settings.embeddingSource = "keyword";
 		}
@@ -1368,6 +1487,417 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	async flushSaveSettings() {
 		this._saveSettingsDebounce.cancel();
 		await this._saveSettingsImmediate();
+	}
+
+	// ──────────────────────────────────────────
+	// 已装插件管理（增强原生「设置 → 社区插件」页）
+	// ──────────────────────────────────────────
+
+	/**
+	 * 启动设置页增强。全程容错：私有 API 缺失或抛错都只 warn 并放弃增强，
+	 * 绝不因本功能影响原生设置页与插件主体。
+	 */
+	startSettingsIntegration(): void {
+		try {
+			if (this.settingsIntegration) return;
+			if (!this.settings.manage.enabled) return;
+			if (!asAppInternals(this.app).setting) return;
+			this.settingsIntegration = new SettingsIntegrationController(
+				this.app,
+				this.createManageStore(),
+				this.createCssStore(),
+				{
+				openPluginSettings: () => this.openPluginSettingsTab(),
+				openManageGroups: (type) => this.openManageGroups(type),
+				requestRenameSnippet: (baseName) => this.renameSnippetPrompt(baseName),
+			},
+			);
+			this.settingsIntegration.start();
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 启动设置页增强失败（原生设置页不受影响）：", error);
+		}
+	}
+
+	/** 开关切换或分组数据变更后重装配（设置面板调用） */
+	refreshSettingsIntegration(): void {
+		this.settingsIntegration?.stop();
+		this.settingsIntegration = null;
+		this.startSettingsIntegration();
+	}
+
+	/** 打开本插件设置页（增强栏「管理分组」的落点） */
+	openPluginSettingsTab(): void {
+		try {
+			const setting = asAppInternals(this.app).setting;
+			setting?.open?.();
+			setting?.openTabById?.(this.manifest.id);
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 打开插件设置页失败：", error);
+		}
+	}
+
+	/** 按作用域构建统一分组数据端口（插件 / CSS） */
+	createGroupManageStore(type: GroupManageType): GroupManageStore {
+		const settings = this.settings.manage;
+		const prefix = type === "css" ? "css" : "plugin";
+		return {
+			type,
+			getGroups: () => settings[`${prefix}Groups`],
+			getGroupColors: () => settings[`${prefix}GroupColors`],
+			getMeta: () => settings[`${prefix}Meta`],
+			saveGroups: (groups, colors) => {
+				settings[`${prefix}Groups`] = groups;
+				settings[`${prefix}GroupColors`] = colors;
+				void this.flushSaveSettings();
+				this.settingsIntegration?.requestRefresh();
+			},
+			saveMeta: (id, patch) => {
+				settings[`${prefix}Meta`] = setMeta(settings[`${prefix}Meta`], id, patch);
+				void this.flushSaveSettings();
+			},
+			replaceMeta: (meta) => {
+				settings[`${prefix}Meta`] = meta;
+				void this.flushSaveSettings();
+			},
+		};
+	}
+
+	/** 弹窗管理分组（对齐参考插件的模态框交互） */
+	openManageGroups(type: GroupManageType): void {
+		try {
+			const modal = new GroupManagementModal(this.app, this.createGroupManageStore(type));
+			modal.open();
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 打开分组管理弹窗失败：", error);
+			new Notice(pickLang("manage.groups.open.fail"));
+		}
+	}
+
+	// ──────────────────────────────────────────
+	// 直链 Beta 插件跟踪 + 更新闭环（P0）
+	// ──────────────────────────────────────────
+
+	/** 一次成功直链安装后记录来源，使该插件/主题可被回头更新（按 id 幂等 upsert，冻结态保留） */
+	recordBetaInstall(info: InstalledInfo): void {
+		const list = this.settings.betaPlugins.slice();
+		const idx = list.findIndex((e) => e.id === info.id && (e.kind ?? "plugin") === info.kind);
+		const entry: BetaPluginEntry = {
+			id: info.id,
+			name: info.name || info.id,
+			rootUrl: info.rootUrl,
+			installedVersion: info.version,
+			frozen: idx >= 0 ? list[idx].frozen : false,
+			kind: info.kind,
+			release: info.release,
+			releaseTag: info.releaseTag,
+		};
+		if (idx >= 0) list[idx] = entry;
+		else list.push(entry);
+		this.settings.betaPlugins = list;
+		void this.flushSaveSettings();
+	}
+
+	/** 从跟踪表移除（仅移除记录，不卸载插件本身） */
+	removeBetaPlugin(id: string): void {
+		this.settings.betaPlugins = this.settings.betaPlugins.filter((e) => e.id !== id);
+		void this.flushSaveSettings();
+	}
+
+	/** 切换冻结态（冻结后不参与启动自动更新与「全部更新」） */
+	setBetaFrozen(id: string, frozen: boolean): void {
+		this.settings.betaPlugins = this.settings.betaPlugins.map((e) =>
+			e.id === id ? { ...e, frozen } : e,
+		);
+		void this.flushSaveSettings();
+	}
+
+	/** 更新单个直链 Beta 插件，并回写已装版本号 */
+	async updateBetaPluginById(id: string): Promise<void> {
+		const entry = this.settings.betaPlugins.find((e) => e.id === id);
+		if (!entry) {
+			new Notice(t("beta.notTracked", { name: id }));
+			return;
+		}
+		if (Platform.isMobile) {
+			new Notice(t("beta.mobileBlocked"));
+			return;
+		}
+		try {
+			const r = await updateBetaEntry(this.app, entry);
+			if (r.updated) {
+				const next = { ...entry, installedVersion: r.manifest.version };
+				this.settings.betaPlugins = this.settings.betaPlugins.map((e) => (e.id === id ? next : e));
+				void this.flushSaveSettings();
+				new Notice(t("beta.updated", { name: entry.name || id, version: r.manifest.version }), 5000);
+			} else {
+				new Notice(t("beta.uptodate", { name: entry.name || id, version: r.manifest.version }), 5000);
+			}
+		} catch (err) {
+			new Notice(t("beta.failed", { msg: err instanceof Error ? err.message : String(err) }), 8000);
+		}
+	}
+
+	/** 全部更新（设置页按钮）：逐条更新未冻结项并回写版本号 */
+	async updateAllBetaPlugins(): Promise<void> {
+		const res = await updateAllBetaPlugins(this.app, this.settings.betaPlugins, { silent: false });
+		const byId = new Map(this.settings.betaPlugins.map((e) => [e.id, { ...e }]));
+		for (const r of res.results) {
+			if (r.updated && r.version) {
+				const e = byId.get(r.id);
+				if (e) e.installedVersion = r.version;
+			}
+		}
+		this.settings.betaPlugins = [...byId.values()];
+		void this.flushSaveSettings();
+	}
+
+	/** 启动自动更新（onload 调用，静默跑，仅在有变化时给一条汇总） */
+	private runBetaAutoUpdate(): void {
+		if (Platform.isMobile) return;
+		const entries = this.settings.betaPlugins.filter((e) => !e.frozen);
+		if (entries.length === 0) return;
+		void updateAllBetaPlugins(this.app, entries, { silent: true })
+			.then((res) => {
+				if (res.updated > 0 || res.failed > 0) {
+					new Notice(
+						t("beta.updateAllDone", { total: String(res.total), updated: String(res.updated) }),
+						6000,
+					);
+				}
+				const byId = new Map(this.settings.betaPlugins.map((e) => [e.id, { ...e }]));
+				for (const r of res.results) {
+					if (r.updated && r.version) {
+						const e = byId.get(r.id);
+						if (e) e.installedVersion = r.version;
+					}
+				}
+				this.settings.betaPlugins = [...byId.values()];
+				void this.flushSaveSettings();
+			})
+			.catch(() => {});
+	}
+
+	/**
+	 * 管理模块的数据端口实现：注入给 ui 层，使其无需反向依赖 app 层。
+	 * 落盘统一走 flushSaveSettings（防抖取消 + 立即写），与全局设置保存口径一致。
+	 */
+	private createManageStore(): ManageStorePort {
+		const settings = this.settings.manage;
+		const flushSave = () => { void this.flushSaveSettings(); };
+		const requestRefresh = () => this.settingsIntegration?.requestRefresh();
+		const manifests = asAppInternals(this.app).plugins?.manifests ?? {};
+		return {
+			get settings() {
+				return settings;
+			},
+			saveGroups(groups, colors) {
+				settings.pluginGroups = groups;
+				settings.pluginGroupColors = colors;
+				flushSave();
+				requestRefresh();
+			},
+			saveMeta(id, patch) {
+				settings.pluginMeta = setMeta(settings.pluginMeta, id, patch);
+				flushSave();
+			},
+			replaceMeta(meta) {
+				settings.pluginMeta = meta;
+				flushSave();
+			},
+			saveFilterState(state) {
+				settings.filterState = state;
+				flushSave();
+			},
+			installedIds() {
+				return Object.keys(manifests);
+			},
+		};
+	}
+
+	/** CSS 片段管理的数据端口实现（注入 settings-integration-controller 与设置页列表） */
+	createCssStore(): CssStorePort {
+		const settings = this.settings.manage;
+		const app = this.app;
+		const flushSave = () => { void this.flushSaveSettings(); };
+		const requestRefresh = () => this.settingsIntegration?.requestRefresh();
+		const refreshToggleCommands = () => this.refreshSnippetToggleCommands();
+		return {
+			get settings() {
+				return settings;
+			},
+			saveCssGroups(groups, colors) {
+				settings.cssGroups = groups;
+				settings.cssGroupColors = colors;
+				flushSave();
+				requestRefresh();
+			},
+			saveCssMeta(id, patch) {
+				settings.cssMeta = setMeta(settings.cssMeta, id, patch);
+				flushSave();
+				requestRefresh();
+			},
+			saveCssFilterState(state) {
+				settings.cssFilterState = state;
+				flushSave();
+			},
+			async refreshSnippets() {
+				await refreshSnippets(app);
+				// 文件名集合可能变了，命令名也要跟上
+				refreshToggleCommands();
+			},
+			listSnippets() {
+				return listSnippets(app);
+			},
+			async setSnippetEnabled(baseName, enabled) {
+				await setSnippetEnabled(app, baseName, enabled);
+				requestRefresh();
+			},
+			async renameSnippet(oldBase, newBase) {
+				await renameSnippet(app, oldBase, newBase);
+				// 同步元数据 key（平台层不碰 manage.cssMeta）
+				const meta = settings.cssMeta;
+				if (meta[oldBase]) {
+					const next = { ...meta, [newBase]: meta[oldBase] };
+					delete next[oldBase];
+					settings.cssMeta = next;
+					flushSave();
+				}
+				requestRefresh();
+			},
+			openSnippet(path) {
+				openSnippetInDefaultApp(app, path);
+			},
+			replaceCssMeta(meta) {
+				settings.cssMeta = meta;
+				flushSave();
+			},
+		};
+	}
+
+	/** 弹窗请求重命名 CSS 片段，确认后调用 store 层重命名（同步启用状态与元数据 key） */
+	private renameSnippetPrompt(baseName: string): void {
+		try {
+			const modal = new SnippetRenameModal(this.app, baseName, (newBase) => {
+				void this.createCssStore().renameSnippet(baseName, newBase);
+			});
+			modal.open();
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 打开 CSS 片段重命名弹窗失败：", error);
+			new Notice(pickLang("manage.file.rename.fail"));
+		}
+	}
+
+	/** 打开原生「设置 → 社区插件」页（已装插件管理的命令入口） */
+	openCommunityPluginsSettings(): void {
+		try {
+			const setting = asAppInternals(this.app).setting;
+			setting?.open?.();
+			setting?.openTabById?.("community-plugins");
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 打开社区插件设置页失败：", error);
+		}
+	}
+
+	/**
+	 * 为每个已安装插件注册「切换插件：<名称>」命令。
+	 * 始终排除自身——把自己禁用掉会导致市场直接消失，需要手动恢复。
+	 */
+	refreshPluginToggleCommands(): void {
+		try {
+			for (const id of this.pluginToggleCommandIds) this.removeCommand(id);
+			this.pluginToggleCommandIds = [];
+
+			const manifests = asAppInternals(this.app).plugins?.manifests ?? {};
+			for (const [pluginId, manifest] of Object.entries(manifests)) {
+				if (pluginId === this.manifest.id) continue;
+				const rawName = manifest.name;
+				const name = typeof rawName === "string" && rawName ? rawName : pluginId;
+				const commandId = `toggle-plugin-${pluginId}`;
+				this.addCommand({
+					id: commandId,
+					name: pickLang("manage.togglePlugin", { name }),
+					callback: () => void this.toggleInstalledPlugin(pluginId, name),
+				});
+				this.pluginToggleCommandIds.push(commandId);
+			}
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 注册插件切换命令失败：", error);
+		}
+	}
+
+	/**
+	 * 重扫 CSS 片段目录并刷新命令与已打开的设置页。
+	 *
+	 * 片段文件在配置目录里（不进 vault 文件树，也没有 create/delete 事件），
+	 * 只能靠显式异步扫描；所有入口（启动、进入外观页、打开插件设置页）都走这里。
+	 */
+	async reloadCssSnippets(): Promise<void> {
+		try {
+			await refreshSnippets(this.app);
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 扫描 CSS 片段目录失败:", error);
+		}
+		this.refreshSnippetToggleCommands();
+		this.settingsIntegration?.requestRefresh();
+	}
+
+	/**
+	 * 为每个 CSS 片段注册「切换 CSS 片段：<名称>」命令（命令面板 / 快捷键启用禁用）。
+	 * 片段无「自身」概念，无需排除。
+	 */
+	refreshSnippetToggleCommands(): void {
+		try {
+			for (const id of this.cssToggleCommandIds) this.removeCommand(id);
+			this.cssToggleCommandIds = [];
+
+			for (const snippet of listSnippets(this.app)) {
+				const commandId = `toggle-css-${snippet.baseName}`;
+				this.addCommand({
+					id: commandId,
+					name: pickLang("manage.toggleCss", { name: snippet.baseName }),
+					callback: () => void this.toggleSnippetEnabled(snippet.baseName),
+				});
+				this.cssToggleCommandIds.push(commandId);
+			}
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 注册 CSS 片段切换命令失败:", error);
+		}
+	}
+
+	/** 切换单个 CSS 片段的启用状态 */
+	private async toggleSnippetEnabled(baseName: string): Promise<void> {
+		const enabled = isSnippetEnabled(this.app, baseName);
+		await setSnippetEnabled(this.app, baseName, !enabled);
+	}
+
+	/**
+	 * 切换单个插件的启用状态。
+	 *
+	 * 复用 applyProfileByIds 而不是另写一套：它内部走 enable/disablePluginAndSave，
+	 * 双写 community-plugins.json 与运行时启用集，与卡片上的启用按钮口径一致
+	 * （此前「重启后禁用失效」正是只改内存不写盘导致的）。
+	 */
+	async toggleInstalledPlugin(pluginId: string, name: string): Promise<void> {
+		try {
+			const plugins = asAppInternals(this.app).plugins;
+			if (!plugins) return;
+			const ep = plugins.enabledPlugins as unknown as Set<string> | string[] | undefined;
+			const current = new Set(ep ?? []);
+			const turningOn = !current.has(pluginId);
+			const next = new Set(current);
+			if (turningOn) next.add(pluginId);
+			else next.delete(pluginId);
+
+			await applyProfileByIds(this.app, current, next, this.manifest.id);
+			new Notice(
+				turningOn
+					? pickLang("manage.toggled.on", { name })
+					: pickLang("manage.toggled.off", { name })
+			);
+		} catch (error) {
+			logger.warn("[Chinese Plugin Market] 切换插件启用状态失败：", error);
+			new Notice(pickLang("manage.toggle.fail", { name }));
+		}
 	}
 
 	private async loadTranslatorData(allData?: Record<string, unknown>) {
@@ -2243,7 +2773,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 	/**
 	 * 预热本地 embedding worker（对齐 vault-curate 的 warmup）：
-	 * 提前启动 worker + 加载 e5 模型，让首次本地语义搜索免于冷启动等待。
+	 * 提前启动 worker + 加载 bge 模型，让首次本地语义搜索免于冷启动等待。
 	 * 后台 fire-and-forget，失败静默；幂等（同会话只预热一次）。
 	 */
 	warmupLocalEmbedding(): void {
@@ -2297,7 +2827,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	/**
 	 * 后台预建本地向量索引（A+B：设置页手动 / 数据就绪后自动共用）。
 	 *
-	 * 用本地 e5 模型对当前插件列表 embed → 构建 VectorIndex（含分类注入）→
+	 * 用本地 bge 模型对当前插件列表 embed → 构建 VectorIndex（含分类注入）→
 	 * 写入 SQLite。已构建则直接返回（幂等）。正在构建时并发调用复用同一次。
 	 * 进度写到 this.localIndexState，供设置页/视图轮询展示。
 	 */
@@ -2316,8 +2846,6 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			logger.warn("[Chinese Plugin Market] 预建本地索引：暂无插件数据（需先打开插件市场视图加载列表）。");
 			return;
 		}
-		// 幂等由 buildVectorIndex 的 fieldsHash 快路保证；不能只按条数返回，
-		// 因为原文、分类或中文译文都可能在条数不变时更新。
 		const total = plugins.length;
 		let doneCount = 0; // 真实已 embed 计数（增量构建时为增量条目数，分母对齐 total）
 		const model = this.settings.embeddingLocalModel || DEFAULT_LOCAL_MODEL;
@@ -2335,6 +2863,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				descZh: hasTr ? tr.translatedDesc : undefined,
 			};
 		});
+		// 预建与搜索共用同一套失效条件：数量不变但描述/分类变化时也必须更新。
 		const schemaVer = this.translator.getCategorySchemaVersion();
 		const embeddingIdentity = getEmbeddingIdentity({
 			source: "local",
@@ -2342,6 +2871,18 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			localWasmPaths: this.settings.embeddingLocalWasmPaths || undefined,
 		});
 		const fieldsHash = computeIndexFingerprints(indexPlugins, (p) => p).fields;
+		const currentIndex = this.translator.getVectorIndex();
+		if (
+			!force &&
+			currentIndex &&
+			currentIndex.ids.length === plugins.length &&
+			currentIndex.model === model &&
+			currentIndex.embeddingIdentity === embeddingIdentity &&
+			currentIndex.categorySchemaVersion === schemaVer &&
+			currentIndex.fieldsHash === fieldsHash
+		) return;
+
+		this.localIndexState = { status: "building", progress: 0, total };
 		const done = (s: "done" | "error", error?: string) => {
 			this.localIndexState = {
 				status: s,
@@ -2353,7 +2894,6 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		};
 
 		const run = async (): Promise<void> => {
-			const previousIndex = this.translator.getVectorIndex();
 		try {
 			const base = new LocalEmbeddingProvider(undefined, model, this.settings.embeddingLocalWasmPaths || undefined, this.settings.embeddingRemoteHost || undefined);
 			// 时间片渐进构建（对齐 vault-curate 的 buildBM25Sliced）：每批 embed 后
@@ -2383,42 +2923,44 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				},
 			};
 
-			// 把当前索引作为 prevIndex 传入，启用增量 embed（只 embed 新增/内容变化的 id，
-			// 未变的复用旧向量），与 saveVectorIndex 的增量写盘配合，避免每次全量重建。
-			// 动态构建只发布经 perIdHash 确认可复用的旧向量，再逐片追加新向量；
-			// 不能按 id 盲目播旧向量，否则内容变化的条目会以旧/新向量重复出现。
-			// 搜索侧遇 partial 直接用不重建 → 构建期间搜索即可用、索引可见地生长。
-			// force（设置页手动重建）= 丢弃旧索引全量重 embed；否则增量（perIdHash 复用未变条目）。
-			const prevIdx = force ? null : previousIndex;
+			// 动态构建通过 onReuse/onPartial 逐步发布，但只发布经过 per-id 指纹确认可复用的向量。
+			const prevIdx = force ? null : this.translator.getVectorIndex();
 			const partialIds: string[] = [];
 			const partialVecs: (number[] | Float32Array)[] = [];
+			const partialById = new Map<string, number[] | Float32Array>();
 			const publish = () => {
+				partialIds.length = 0;
+				partialVecs.length = 0;
+				for (const p of indexPlugins) {
+					const v = partialById.get(p.id);
+					if (v) {
+						partialIds.push(p.id);
+						partialVecs.push(v);
+					}
+				}
 				this.translator.setVectorIndex({
 					ids: partialIds,
 					vectors: partialVecs,
 					hash: "",
 					model,
 					embeddingIdentity,
-					categorySchemaVersion: schemaVer,
 					fieldsHash,
+					categorySchemaVersion: schemaVer,
 					partial: true,
 				});
 			};
+			publish();
 			const index = await buildVectorIndex(provider, indexPlugins, model, prevIdx, schemaVer, {
 				precomputedFieldsHash: fieldsHash,
 				embeddingIdentity,
 				chunk: 128,
-				onReuse: (reused) => {
-					for (const [id, v] of reused) {
-						partialIds.push(id);
-						partialVecs.push(v);
-					}
+				onReuse: (updates) => {
+					for (const [id, v] of updates) partialById.set(id, v);
 					publish();
 				},
 				onPartial: (updates) => {
 					for (const [id, v] of updates) {
-						partialIds.push(id);
-						partialVecs.push(v);
+						partialById.set(id, v);
 					}
 					publish();
 				},
@@ -2438,11 +2980,6 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			}
 		} catch (e: unknown) {
 			const msg = e instanceof Error ? e.message : String(e);
-			// partial 只代表「正在构建」，失败后不能让不完整索引继续成为搜索侧的
-			// 稳态缓存；恢复构建前的完整索引，下一次触发仍可重试增量维护。
-			if (this.translator.getVectorIndex()?.partial) {
-				this.translator.setVectorIndex(previousIndex ?? null);
-			}
 			logger.warn("[Chinese Plugin Market] 预建本地向量索引失败：", e);
 			done("error", msg);
 		} finally {

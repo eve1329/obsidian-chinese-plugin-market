@@ -29,6 +29,10 @@ export interface SimilarCandidate {
 	id: string;
 	name: string;
 	translatedName: string;
+	/** 插件简介（原始 description），替代原来的 reason 文本做扫描 */
+	description: string;
+	/** 插件简介（已翻译中文描述），优先用于相似推荐卡片展示 */
+	translatedDesc?: string;
 	reason: string;
 	/** 相似度得分（已按相关度排序，越大越相关），用于强度条 */
 	score: number;
@@ -347,6 +351,7 @@ function makeReason(signals: SimilarSignals): string {
  * @param allPlugins 全量插件列表（至少需要 {id, name, description} 字段）
  * @param tagService 分类标签查询器
  * @param translatedNames 已翻译名称映射（id → translatedName）
+ * @param translatedDescs 已翻译描述映射（id → translatedDesc）
  * @param topN 返回前 N 个
  * @param invertedIndex 可选倒排索引（不传则退化为全量扫描，兼容性保证）
  */
@@ -356,6 +361,7 @@ export function computeSimilar(
 	allPlugins: Array<{ id: string; name: string; description: string; downloads?: number }>,
 	tagService: { getTag: (id: string) => PluginTag | null },
 	translatedNames: Record<string, string>,
+	translatedDescs: Record<string, string>,
 	topN = 5,
 	invertedIndex?: InvertedIndex
 ): SimilarCandidate[] {
@@ -406,6 +412,8 @@ export function computeSimilar(
 			id: p.id,
 			name: p.name,
 			translatedName: translatedNames[p.id] || p.name,
+			description: p.description,
+			translatedDesc: translatedDescs[p.id],
 			reason: makeReason(signals),
 			score,
 			signals,

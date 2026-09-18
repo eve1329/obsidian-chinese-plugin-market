@@ -12,12 +12,12 @@ import { normalizeBaseUrl, isLocalBaseUrl, isAISearchUsable } from "@shared/util
 import { BaiduTranslateClient } from "@translation/api/baidu";
 import { isWebGPUAvailable } from "@semantic/embedding";
 import { isMobileEnvironment } from "@shared/platform";
-import { localPhaseMs, PHASE } from "@domain/search/search-timing";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 import { VIEW_TYPE } from "@shared/constants";
 import { logger } from "@shared/logger";
 import type { ChinesePluginMarketView } from "@ui/view/translator-view";
 import { CONTRIBUTORS, contributorGitHubUrl } from "@shared/contributors";
+import { CssSnippetSettingsList } from "@ui/settings/css-snippet-settings-list";
 
 export class TranslatorSettingTab extends PluginSettingTab {
 	private plugin: ChinesePluginMarket;
@@ -180,12 +180,29 @@ export class TranslatorSettingTab extends PluginSettingTab {
 				desc: this.t("settings.thanks.desc"),
 				items: [
 					{
+						// 左侧 label 留空：group 标题已经是「鸣谢」，无需重复显示				{
 						// 左侧 label 留空：group 标题已经是「鸣谢」，无需重复显示
 						name: "",
 						render: (setting) => this.renderThanks(setting),
-					},
-				],
-			},
+						},
+						],
+						},
+						{
+						type: "group",
+						heading: this.t("beta.title"),
+						desc: this.t("beta.desc"),
+						items: [
+						{
+						name: this.t("beta.autoUpdate"),
+						desc: this.t("beta.autoUpdateDesc"),
+						control: { type: "toggle", key: "betaAutoUpdate", defaultValue: false },
+						},
+						{
+						name: "",
+						render: (setting) => this.renderBetaPlugins(setting),
+						},
+						],
+						},
 			{
 				type: "group",
 				heading: this.t("settings.prefs"),
@@ -765,13 +782,67 @@ export class TranslatorSettingTab extends PluginSettingTab {
 			},
 			{
 				type: "group",
-				heading: this.t("settings.diagnostics"),
-				desc: this.t("settings.diagnostics.desc"),
+				heading: this.t("settings.manage"),
+				desc: this.t("settings.manage.desc"),
 				items: [
 					{
-						// 左侧 label 留空：group 标题已说明用途，避免重复显示
-						name: "",
-						render: (setting) => this.renderSearchTiming(setting),
+						name: this.t("settings.manage.enable"),
+						desc: this.t("settings.manage.enable.desc"),
+						render: (setting) => this.renderManageEnable(setting),
+					},
+					{
+						name: this.t("settings.manage.groups"),
+						desc: this.t("settings.manage.groups.desc"),
+						render: (setting) => this.renderManageGroups(setting),
+					},
+					{
+						name: this.t("settings.manage.css.groups"),
+						desc: this.t("settings.manage.css.groups.desc"),
+						render: (setting) => this.renderCssGroups(setting),
+					},
+					{
+						name: this.t("settings.manage.css.list"),
+						desc: this.t("settings.manage.css.list.desc"),
+						render: (setting) => this.renderCssSnippetList(setting),
+					},
+					],
+			},
+			{
+				type: "group",
+				heading: this.t("settings.translateSettings"),
+				desc: this.t("settings.translateSettings.desc"),
+				items: [
+					{
+						name: this.t("settings.translateSettings.enable"),
+						desc: this.t("settings.translateSettings.enable.desc"),
+						render: (setting) => this.renderTranslateSettingsEnable(setting),
+					},
+					{
+						name: this.t("settings.translateSettings.provider"),
+						desc: this.t("settings.translateSettings.provider.desc"),
+						control: {
+							type: "dropdown",
+							key: "translateSettingsProvider",
+							defaultValue: "free",
+							options: {
+								free: this.t("settings.translateSettings.provider.free"),
+								baidu: this.t("settings.translateSettings.provider.baidu"),
+							},
+						},
+					},
+					{
+						name: this.t("settings.translateSettings.blacklist"),
+						desc: this.t("settings.translateSettings.blacklist.desc"),
+						control: {
+							type: "text",
+							key: "translateSettingsBlacklist",
+							placeholder: "plugin-id-1, plugin-id-2",
+						},
+					},
+					{
+						name: this.t("settings.translateSettings.clearCache"),
+						desc: this.t("settings.translateSettings.clearCache.desc"),
+						render: (setting) => this.renderClearSettingsCache(setting),
 					},
 				],
 			},
@@ -808,6 +879,154 @@ export class TranslatorSettingTab extends PluginSettingTab {
 			link.setAttr("target", "_blank");
 			link.setAttr("rel", "noopener noreferrer");
 		}
+	}
+
+	/** 已装插件管理：总开关（联动设置页增强的启动 / 停止） */
+	private renderManageEnable(setting: Setting): void {
+		setting.addToggle((tc) =>
+			tc
+				.setValue(this.plugin.settings.manage.enabled)
+				.onChange(async (v) => {
+					this.plugin.settings.manage.enabled = v;
+					await this.plugin.flushSaveSettings();
+					this.plugin.refreshSettingsIntegration();
+				})
+		);
+	}
+
+	/** 已装插件管理：分组入口（弹窗管理，对齐参考插件的模态框交互） */
+	private renderManageGroups(setting: Setting): void {
+		setting.addButton((btn) =>
+			btn
+				.setButtonText(this.t("manage.groups.open"))
+				.setCta()
+				.onClick(() => this.plugin.openManageGroups("plugin"))
+		);
+	}
+
+	/** 直链 Beta 插件管理：列出跟踪表，支持单条更新 / 冻结 / 移除 + 全部更新 */
+	private renderBetaPlugins(setting: Setting): void {
+		setting.settingEl.addClass("pt-setting-full-width");
+		if (setting.infoEl) setting.infoEl.addClass("pt-setting-info-hidden");
+		setting.controlEl.addClass("pt-setting-control-full");
+		setting.controlEl.empty();
+		const list = setting.controlEl.createDiv({ cls: "pt-beta-list" });
+		this.buildBetaList(list);
+	}
+
+	private buildBetaList(list: HTMLElement): void {
+		list.empty();
+		const entries = this.plugin.settings.betaPlugins;
+		if (entries.length === 0) {
+			list.createDiv({ cls: "pt-beta-empty", text: this.t("beta.empty") });
+			return;
+		}
+		const header = list.createDiv({ cls: "pt-beta-header" });
+		header.createSpan({ text: this.t("beta.title"), cls: "pt-beta-count" });
+		const allBtn = header.createEl("button", {
+			cls: "mod-cta",
+			text: this.t("beta.updateAll"),
+		});
+		allBtn.addEventListener("click", () => {
+			allBtn.disabled = true;
+			allBtn.textContent = this.t("beta.updating");
+			void this.plugin.updateAllBetaPlugins().then(() => this.buildBetaList(list));
+		});
+		for (const e of entries) {
+			const row = list.createDiv({ cls: "pt-beta-row" });
+			const name = row.createDiv({ cls: "pt-beta-name" });
+			name.createSpan({ text: e.name || e.id });
+			name.createSpan({
+				cls: "pt-beta-kind",
+				text: e.kind === "theme" ? this.t("beta.kind.theme") : this.t("beta.kind.plugin"),
+			});
+			name.createSpan({
+				text: ` v${e.installedVersion}${e.frozen ? " · " + this.t("beta.frozen") : ""}`,
+				cls: "pt-beta-ver",
+			});
+			const actions = row.createDiv({ cls: "pt-beta-actions" });
+			const upBtn = actions.createEl("button", { text: this.t("beta.update") });
+			upBtn.addEventListener("click", () => {
+				upBtn.disabled = true;
+				upBtn.textContent = this.t("beta.updating");
+				void this.plugin.updateBetaPluginById(e.id).then(() => this.buildBetaList(list));
+			});
+			const freezeBtn = actions.createEl("button", {
+				text: e.frozen ? this.t("beta.unfreeze") : this.t("beta.freeze"),
+			});
+			freezeBtn.addEventListener("click", () => {
+				this.plugin.setBetaFrozen(e.id, !e.frozen);
+				this.buildBetaList(list);
+			});
+			const rmBtn = actions.createEl("button", {
+				text: this.t("beta.remove"),
+				cls: "mod-warning",
+			});
+			rmBtn.addEventListener("click", () => {
+				this.plugin.removeBetaPlugin(e.id);
+				this.buildBetaList(list);
+			});
+		}
+	}
+
+	/** 插件设置页内的 CSS 片段列表（分组 / 备注 / 启用 / 重命名 / 打开 / 空态） */
+	private renderCssSnippetList(setting: Setting): void {
+		setting.settingEl.addClass("pt-setting-full-width");
+		if (setting.infoEl) setting.infoEl.addClass("pt-setting-info-hidden");
+		setting.controlEl.addClass("pt-setting-control-full");
+		setting.controlEl.empty();
+
+		const list = new CssSnippetSettingsList(this.app, this.plugin.createCssStore(), {
+			openPluginSettings: () => this.plugin.openPluginSettingsTab(),
+			openManageGroups: () => this.plugin.openManageGroups("css"),
+		});
+		list.render(setting.controlEl);
+		// 片段名单来自异步扫描（配置目录不进 vault 文件树），首帧可能还没加载到，
+		// 扫完再整体重绘一次，避免「有片段却显示暂无」。
+		void this.plugin.reloadCssSnippets().then(() => list.refresh());
+	}
+
+	/** CSS 片段分组入口（弹窗管理，对齐参考插件的模态框交互） */
+	private renderCssGroups(setting: Setting): void {
+		setting.addButton((btn) =>
+			btn
+				.setButtonText(this.t("manage.groups.open"))
+				.setCta()
+				.onClick(() => this.plugin.openManageGroups("css"))
+		);
+	}
+
+	/** 设置页翻译：启用开关（实时生效，联动钩子挂载/卸载） */
+	private renderTranslateSettingsEnable(setting: Setting): void {
+		setting.addToggle((tc) =>
+			tc
+				.setValue(this.plugin.settings.translateSettingsEnabled)
+				.onChange(async (v) => {
+					this.plugin.settings.translateSettingsEnabled = v;
+					if (v) {
+						this.plugin.ensureSettingsTranslator();
+						this.plugin.settingsTranslator?.enable();
+					} else {
+						this.plugin.settingsTranslator?.disable();
+					}
+					await this.plugin.flushSaveSettings();
+				})
+		);
+	}
+
+	/** 设置页翻译：清空本地翻译缓存 */
+	private renderClearSettingsCache(setting: Setting): void {
+		setting.addButton((btn) =>
+			btn
+				.setButtonText(this.t("settings.translateSettings.clearCache.btn"))
+				.setTooltip(this.t("settings.translateSettings.clearCache.tip"))
+				.setDestructive()
+				.onClick(() => {
+					this.plugin.settingsTranslator?.clearCache();
+					this.plugin.settings.settingsTranslateCache = {};
+					new Notice(this.t("settings.translateSettings.cleared"));
+				})
+		);
 	}
 
 	/** 读取当前真正启用的插件 id 集合（来自 app.plugins.enabledPlugins，不依赖视图是否打开） */
@@ -1080,68 +1299,5 @@ export class TranslatorSettingTab extends PluginSettingTab {
 				setting.descEl.setText(`${this.t("settings.embedding.index.idle")} · SQLite ${st.sqliteReady ? "✓" : "✗"}`);
 			}
 		}).catch(() => {});
-	}
-
-	/**
-	 * 渲染搜索耗时诊断：展示最近一次搜索的分段计时（数据来自 AISearcher 的埋点）。
-	 *
-	 * 设置页不随搜索自动刷新，故提供「刷新」按钮手动取最新快照。
-	 * 展示口径与自动告警一致：本地阶段合计（排除 LLM 网络耗时）——否则任何一次正常
-	 * 搜索都会因为 LLM 延迟而「看起来慢」。
-	 */
-	private renderSearchTiming(setting: Setting): void {
-		setting.settingEl.addClass("pt-setting-full-width");
-		if (setting.infoEl) setting.infoEl.addClass("pt-setting-info-hidden");
-		setting.controlEl.addClass("pt-setting-control-full");
-		setting.controlEl.empty();
-
-		const box = setting.controlEl.createDiv({ cls: "pt-timing-box" });
-
-		const render = () => {
-			box.empty();
-			const snap = this.plugin.translator.getLastSearchTiming();
-			if (!snap) {
-				box.createDiv({ cls: "pt-timing-empty", text: this.t("settings.diagnostics.empty") });
-				return;
-			}
-
-			box.createDiv({
-				cls: "pt-timing-total",
-				text: this.t("settings.diagnostics.total", { total: snap.totalMs.toFixed(1) }),
-			});
-			box.createDiv({
-				cls: "pt-timing-sub",
-				text: this.t("settings.diagnostics.local", { local: localPhaseMs(snap).toFixed(1) }),
-			});
-
-			// 各阶段：名称 + 毫秒 + 占比条。用 <progress> 而非内联宽度，遵循
-			// no-static-styles-assignment —— 动态宽度同样不走内联样式。
-			const maxMs = Math.max(1, ...snap.phases.map((p) => p.ms));
-			for (const p of snap.phases) {
-				const row = box.createDiv({ cls: "pt-timing-row" });
-				row.createSpan({ cls: "pt-timing-name", text: p.name });
-				row.createSpan({ cls: "pt-timing-ms", text: `${p.ms.toFixed(1)} ms` });
-				const bar = row.createEl("progress", {
-					cls: p.name === PHASE.llmRank ? "pt-timing-bar-llm" : "pt-timing-bar",
-				});
-				bar.max = maxMs;
-				bar.value = p.ms;
-			}
-
-			const counters = Object.entries(snap.counters);
-			if (counters.length > 0) {
-				box.createDiv({
-					cls: "pt-timing-counters",
-					text: counters.map(([k, v]) => `${k}=${v}`).join(" · "),
-				});
-			}
-
-			box.createDiv({ cls: "pt-timing-hint", text: this.t("settings.diagnostics.hint") });
-		};
-
-		setting.addButton((b) =>
-			b.setButtonText(this.t("settings.diagnostics.refresh")).onClick(() => render())
-		);
-		render();
 	}
 }

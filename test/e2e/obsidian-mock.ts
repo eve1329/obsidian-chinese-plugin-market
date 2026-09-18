@@ -173,100 +173,133 @@ export class PluginSettingTab {
 	containerEl = document.createElement("div");
 }
 
-/** Setting.addButton 回调收到的按钮对象（仅覆盖设置页实际用到的 API） */
-interface ButtonMock {
-	setButtonText(text: string): ButtonMock;
-	setDisabled(disabled: boolean): ButtonMock;
-	setTooltip(tooltip: string): ButtonMock;
-	/** 「清空缓存 / 清空 AI 资产」等危险操作按钮用 */
-	setDestructive(): ButtonMock;
-	setWarning(): ButtonMock;
-	setCta(): ButtonMock;
-	setIcon(icon: string): ButtonMock;
-	setClass(cls: string): ButtonMock;
-	onClick(handler: () => void): ButtonMock;
+/** E2E mock：控件组件公共的链式 API（不渲染真实控件，只保证调用链不炸） */
+class BaseComponent {
+	setName(_n: string): this { return this; }
+	setDesc(_d: string): this { return this; }
+	setClass(_c: string): this { return this; }
+	setTooltip(_t: string): this { return this; }
+	setDisabled(_v: boolean): this { return this; }
 }
 
-/**
- * E2E mock of Obsidian 的 Setting。
- *
- * 提供真实的 DOM 结构（settingEl / infoEl / descEl / controlEl），让设置页里那些
- * **自定义 render 回调**（鸣谢 / 向量索引 / 自托管源 / 搜索诊断）能在 e2e 中真正跑起来；
- * addButton 会真正调用回调并把按钮挂到 DOM，使按钮文案与 onClick 也被覆盖。
- *
- * 先前的桩实现没有这些元素，导致上述 render 回调在 e2e 里从未被执行 ——
- * 其中的 Obsidian API 误用只会在用户真实打开设置页时才暴露。
- */
+export class ButtonComponent extends BaseComponent {
+	buttonEl = document.createElement("button");
+	setButtonText(text: string): this {
+		this.buttonEl.textContent = text;
+		return this;
+	}
+	setIcon(_icon: string): this { return this; }
+	setCta(): this { return this; }
+	setWarning(): this { return this; }
+	onClick(_cb: () => unknown): this { return this; }
+}
+
+export class ExtraButtonComponent extends BaseComponent {
+	extraSettingsEl = document.createElement("div");
+	setIcon(_icon: string): this { return this; }
+	onClick(_cb: () => unknown): this { return this; }
+}
+
+export class ToggleComponent extends BaseComponent {
+	private _value = false;
+	setValue(v: boolean): this {
+		this._value = v;
+		return this;
+	}
+	getValue(): boolean { return this._value; }
+	onChange(_cb: (v: boolean) => unknown): this { return this; }
+}
+
+export class TextComponent extends BaseComponent {
+	inputEl = document.createElement("input");
+	private _value = "";
+	setValue(v: string): this {
+		this._value = v;
+		this.inputEl.value = v;
+		return this;
+	}
+	getValue(): string { return this._value; }
+	setPlaceholder(p: string): this {
+		this.inputEl.placeholder = p;
+		return this;
+	}
+	onChange(_cb: (v: string) => unknown): this { return this; }
+}
+
+export class DropdownComponent extends BaseComponent {
+	selectEl = document.createElement("select");
+	private _value = "";
+	addOption(value: string, display: string): this {
+		const opt = document.createElement("option");
+		opt.value = value;
+		opt.text = display;
+		this.selectEl.appendChild(opt);
+		return this;
+	}
+	addOptions(options: Record<string, string>): this {
+		for (const [v, d] of Object.entries(options)) this.addOption(v, d);
+		return this;
+	}
+	setValue(v: string): this {
+		this._value = v;
+		this.selectEl.value = v;
+		return this;
+	}
+	getValue(): string { return this._value; }
+	onChange(_cb: (v: string) => unknown): this { return this; }
+}
+
+export class ColorComponent extends BaseComponent {
+	private _value = "#000000";
+	setValue(v: string): this {
+		this._value = v;
+		return this;
+	}
+	getValue(): string { return this._value; }
+	onChange(_cb: (v: string) => unknown): this { return this; }
+}
+
+/** 版本门槛判断：E2E 里一律视为满足 */
+export function requireApiVersion(_version: string): boolean {
+	return true;
+}
+
 export class Setting {
-	settingEl: HTMLElement;
-	infoEl: HTMLElement;
-	nameEl: HTMLElement;
-	descEl: HTMLElement;
-	controlEl: HTMLElement;
-	/** 由 addButton 记录，供断言按钮文案 / 禁用态 */
-	buttons: { text: string; disabled: boolean }[] = [];
-
-	constructor(containerEl?: HTMLElement) {
-		const root = containerEl ?? document.createElement("div");
-		this.settingEl = document.createElement("div");
-		root.appendChild(this.settingEl);
-		this.infoEl = document.createElement("div");
-		this.nameEl = document.createElement("div");
-		this.descEl = document.createElement("div");
-		this.infoEl.appendChild(this.nameEl);
-		this.infoEl.appendChild(this.descEl);
-		this.controlEl = document.createElement("div");
-		this.settingEl.appendChild(this.infoEl);
-		this.settingEl.appendChild(this.controlEl);
-	}
-
-	setName(name: string): this {
-		this.nameEl.setText(name);
+	settingEl = document.createElement("div");
+	infoEl = document.createElement("div");
+	nameEl = document.createElement("div");
+	descEl = document.createElement("div");
+	controlEl = document.createElement("div");
+	constructor(_containerEl?: HTMLElement) {}
+	setName(): this { return this; }
+	setDesc(): this { return this; }
+	setClass(_c: string): this { return this; }
+	setTooltip(_t: string): this { return this; }
+	setHeading(): this { return this; }
+	addButton(cb: (c: ButtonComponent) => unknown): this {
+		cb(new ButtonComponent());
 		return this;
 	}
-	setDesc(desc: string): this {
-		this.descEl.setText(desc);
+	addExtraButton(cb: (c: ExtraButtonComponent) => unknown): this {
+		cb(new ExtraButtonComponent());
 		return this;
 	}
-	addButton(cb: (btn: ButtonMock) => void): this {
-		const el = document.createElement("button");
-		this.controlEl.appendChild(el);
-		const record = { text: "", disabled: false };
-		this.buttons.push(record);
-		const stub: ButtonMock = {
-			setButtonText: (t) => {
-				record.text = t;
-				el.textContent = t;
-				return stub;
-			},
-			setDisabled: (d) => {
-				record.disabled = d;
-				el.disabled = d;
-				return stub;
-			},
-			onClick: (h) => {
-				el.addEventListener("click", h);
-				return stub;
-			},
-			setTooltip: () => stub,
-			setDestructive: () => {
-				el.classList.add("mod-warning");
-				return stub;
-			},
-			setWarning: () => stub,
-			setCta: () => stub,
-			setIcon: () => stub,
-			setClass: (c) => {
-				el.classList.add(c);
-				return stub;
-			},
-		};
-		cb(stub);
+	addToggle(cb: (c: ToggleComponent) => unknown): this {
+		cb(new ToggleComponent());
 		return this;
 	}
-	addToggle(): this { return this; }
-	addText(): this { return this; }
-	addDropdown(): this { return this; }
+	addText(cb: (c: TextComponent) => unknown): this {
+		cb(new TextComponent());
+		return this;
+	}
+	addDropdown(cb: (c: DropdownComponent) => unknown): this {
+		cb(new DropdownComponent());
+		return this;
+	}
+	addColorPicker(cb: (c: ColorComponent) => unknown): this {
+		cb(new ColorComponent());
+		return this;
+	}
 }
 
 export class ItemView {
@@ -309,6 +342,16 @@ export class Plugin {
 		this.views.push({ type, factory });
 	}
 	registerEvent(): void {}
+	/** 注册卸载回调（Obsidian 的 Component.register） */
+	register(_cb: () => void): void {}
+	registerInterval(id: number): number {
+		return id;
+	}
+	registerDomEvent(): void {}
+	registerEditorExtension(): void {}
+	registerMarkdownPostProcessor(): void {}
+	registerHoverLinkSource(): void {}
+	registerObsidianProtocolHandler(): void {}
 	async loadData(): Promise<Record<string, unknown>> {
 		return this._data;
 	}
@@ -366,6 +409,9 @@ export function makeApp() {
 				setViewStateAsync: async (): Promise<void> => {},
 				detach: (): void => {},
 			}),
+			getRightLeaf: () => null,
+			getLeftLeaf: () => null,
+			changeLayout: async (): Promise<void> => {},
 			setActiveLeaf: (): void => {},
 			onLayoutReady: (cb: () => void): void => cb(), // 同步执行布局就绪回调
 			on: () => ({ unload: (): void => {} }),
@@ -374,11 +420,22 @@ export function makeApp() {
 		},
 		vault: {
 			adapter: makeAdapter(),
+			configDir: ".obsidian",
 			getName: () => "vault",
 			getAbstractFileByPath: () => null,
+			getFiles: () => [],
 			read: async (): Promise<string> => "",
+			cachedRead: async (): Promise<string> => "",
+			create: async () => ({}),
+			createFolder: async (): Promise<void> => {},
+			modify: async (): Promise<void> => {},
+			delete: async (): Promise<void> => {},
+			trash: async (): Promise<void> => {},
 			on: () => ({ unload: (): void => {} }),
 			off: (): void => {},
+		},
+		fileManager: {
+			trashFile: async (): Promise<void> => {},
 		},
 	};
 }
@@ -400,14 +457,6 @@ export function setIcon(el: HTMLElement, _icon: string): void {
 
 export async function requestUrl(_opts: unknown): Promise<never> {
 	throw new Error("requestUrl 在 E2E 中不应被调用");
-}
-
-/**
- * E2E mock：始终认为宿主 API 版本满足要求。
- * 生产用法是安装/更新前的 minAppVersion 守卫；e2e 无需模拟「宿主过旧」这条分支。
- */
-export function requireApiVersion(_version: string): boolean {
-	return true;
 }
 
 export { debounce };

@@ -1,6 +1,6 @@
 {
   "name": "chinese-plugin-market",
-  "version": "2.49.14",
+  "version": "2.56.8",
   "packageManager": "pnpm@10.34.5",
   "description": "中文区 Obsidian 社区插件搜索：输入关键词即可检索并展示翻译后的插件卡片，支持 AI 语义 / 名称 / 作者搜索。默认不加载列表，搜索时才出结果。",
   "main": "main.js",
@@ -15,8 +15,6 @@
     "test:e2e": "node scripts/build-e2e.mjs && npx playwright test",
     "sync": "./sync.sh",
     "gen-tags": "esbuild scripts/gen-tags.ts --bundle --platform=node --format=esm --external:undici --outfile=scripts/gen-tags.mjs && node scripts/gen-tags.mjs",
-    "eval:recall": "esbuild scripts/eval-synonym-recall.ts --bundle --platform=node --format=esm --external:obsidian --external:sql.js --external:@huggingface/transformers --alias:@domain=./src/domain --alias:@translation=./src/translation --alias:@shared=./src/shared --alias:@semantic=./src/semantic --alias:@data=./src/data --alias:@app=./src/app --alias:@ui=./src/ui --outfile=scripts/eval-synonym-recall.mjs && node scripts/eval-synonym-recall.mjs",
-    "eval:recall:baseline": "esbuild scripts/eval-synonym-recall.ts --bundle --platform=node --format=esm --external:obsidian --external:sql.js --external:@huggingface/transformers --alias:@domain=./src/domain --alias:@translation=./src/translation --alias:@shared=./src/shared --alias:@semantic=./src/semantic --alias:@data=./src/data --alias:@app=./src/app --alias:@ui=./src/ui --alias:@translation/lexicon/synonyms=./scripts/baselines/synonyms.pre-round.ts --outfile=scripts/eval-synonym-recall.baseline.mjs && node scripts/eval-synonym-recall.baseline.mjs",
     "check-dict": "esbuild scripts/check-dict-delta.ts --bundle --platform=node --format=esm --outfile=scripts/check-dict-delta.mjs && node scripts/check-dict-delta.mjs",
     "release": "node scripts/release.mjs"
   },
@@ -46,7 +44,7 @@
   },
   "pnpm": {
     "overrides": {
-      "adm-zip": "0.6.0",
+      "adm-zip": "0.6.1",
       "sharp": "^0.35.4"
     }
   }

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Notice, Platform } from "obsidian";
 import { makeMockContext, makeMockPlugin } from "@shared/test-utils";
-import { buildSemanticSearchPlugins, runAISearch } from "@ui/view/view-ai-search";
+import { runAISearch } from "@ui/view/view-ai-search";
 import type { ViewContext } from "@ui/view/view-context";
 
 // 隔离 Notice：断言 AI 搜索编排的控制流，不依赖真实 toast。
@@ -39,7 +39,6 @@ vi.mock("obsidian", async () => {
 		t: (k: string) => String(k),
 		searchQuery: "vue",
 		plugins: [],
-		translatedResults: {},
 		aiSearchPending: false,
 		aiSearchResult: null,
 		aiSearchQueryCache: "",
@@ -114,20 +113,6 @@ describe("runAISearch (P2-1: 从 view-data 拆离 AI 搜索编排)", () => {
 		expect(plugin.saveVectorIndex).not.toHaveBeenCalled();
 	});
 
-	it("语义检索将已缓存的中文译名/译文与原始英文一起传入", () => {
-		const result = buildSemanticSearchPlugins(
-			[{ id: "canvas", name: "Canvas Board", description: "A visual workspace" }],
-			{ canvas: { translatedName: "无限画布", translatedDesc: "提供无限画布和便签" } },
-		);
-		expect(result[0]).toEqual({
-			id: "canvas",
-			name: "Canvas Board",
-			description: "A visual workspace",
-			nameZh: "无限画布",
-			descZh: "提供无限画布和便签",
-		});
-	});
-
 	it("成功路径（非 keyword 嵌入）：调用 plugin.saveVectorIndex 落盘", async () => {
 		const { ctx, plugin, searchInput, aiBadge } = mkCtx({ embeddingSource: "openai" });
 		await runAISearch(ctx, searchInput, aiBadge);
@@ -176,7 +161,6 @@ describe("runAISearch (P2-1: 从 view-data 拆离 AI 搜索编排)", () => {
 			searchQuery: "vue",
 			searchMode: "local",
 			plugins: [{ id: "a", name: "A", description: "d" }],
-			translatedResults: {},
 			aiSearchPending: false,
 			aiSearchResult: null,
 			aiSearchQueryCache: "",
@@ -193,6 +177,14 @@ describe("runAISearch (P2-1: 从 view-data 拆离 AI 搜索编排)", () => {
 		expect(field.createDiv).toHaveBeenCalled();
 		expect(translator.aiSearchLocal).toHaveBeenCalled();
 		expect(ctx.aiSearchResult).toEqual({ rankedIds: ["a", "b"] });
+	});
+
+	it("pluginArgs 透传 downloads/updated（补丁 B 质量因子数据源，此前只在卡片展示）", async () => {
+		const { ctx, translator, searchInput, aiBadge } = mkCtx();
+		ctx.plugins.push({ id: "a", name: "A", description: "d", downloads: 123, updated: 456 } as any);
+		await runAISearch(ctx, searchInput, aiBadge);
+		const args = (translator.aiSearch as any).mock.calls[0][1];
+		expect(args[0]).toMatchObject({ id: "a", downloads: 123, updated: 456 });
 	});
 
 	it("移动端误触发本地模式时回退关键词，不调用本地模型", async () => {

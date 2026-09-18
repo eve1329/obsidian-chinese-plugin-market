@@ -877,6 +877,25 @@ export class Translator {
 	}
 
 	/**
+	 * 批量翻译短文本（设置页 DOM 通道专用）：优先一个请求译完一整块，块级失败再降级逐条。
+	 *
+	 * 与逐条 translateTextSegment 的区别：免费通道支持换行拼块（见 TransmartClient.translateSegments），
+	 * 能把「一屏几十条设置项文案」的网络往返从 2N 次压到 1 次；百度 / 腾讯云通道不支持该约定，
+	 * 走逐条并发。返回数组与 texts 等长，未译出的位置为 null（由调用方保留原文）。
+	 */
+	async translateTextSegments(
+		texts: string[],
+		provider: "tencent-transmart" | "baidu"
+	): Promise<Array<string | null>> {
+		if (texts.length === 0) return [];
+		if (provider === "tencent-transmart" && this.transmartClient.isAvailable()) {
+			const batch = await this.transmartClient.translateSegments(texts);
+			if (batch) return batch;
+		}
+		return Promise.all(texts.map((t) => this.translateTextSegment(t, provider)));
+	}
+
+	/**
 	 * 批量翻译插件列表（内部在线阶段使用并发=3，缓存/词典命中的仍顺序产出以保持进度准确）。
 	 */
 	async translateBatch(
@@ -1098,7 +1117,7 @@ export class Translator {
 	 */
 	async aiSearch(
 		query: string,
-		allPlugins: { id: string; name: string; description: string }[],
+		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string; downloads?: number; updated?: number }[],
 		config?: AISearchConfig,
 		showReason = false,
 		onPhase?: (phase: string, detail: string) => void,
@@ -1114,7 +1133,7 @@ export class Translator {
 	 */
 	async aiSearchLocal(
 		query: string,
-		allPlugins: { id: string; name: string; description: string }[],
+		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string; downloads?: number; updated?: number }[],
 		config?: AISearchConfig,
 		filterCategories?: string[],
 	): Promise<AISearchResult> {

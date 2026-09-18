@@ -25,7 +25,8 @@ import { isMobileEnvironment, requestIdle } from "@shared/platform";
 import type { PluginInfo, TranslateResult, Translator } from "@domain/catalog/translator";
 import type { ChinesePluginMarketSettings } from "@ui/view/translator-view";
 import { makeT, type TFunc, type I18nKey } from "@shared/i18n";
-import { cleanChineseSpaces } from "@shared/utils";
+import { cleanChineseSpaces, stripReviewNotice } from "@shared/utils";
+import { ICON_DOWNLOAD } from "@ui/components/card-render";
 import type { JournalEntry } from "@domain/journal/journal-entry";
 import { renderJournalEditor } from "@ui/components/journal-editor";
 import { formatDownloads, formatUpdated } from "@domain/catalog/stats";
@@ -141,6 +142,8 @@ export interface DrawerOptions {
 	triggerCard: HTMLElement | null;
 	/** 打开新插件的详情（由 main.ts 处理 Drawer 生命周期管理） */
 	openDetail: (pluginId: string) => void;
+	/** 未安装插件的一键静默安装回调（失败内部已提示并回退市场） */
+	installPlugin?: (pluginInfo: PluginInfo) => void | Promise<void>;
 	toggleFavorite: (pluginId: string) => boolean;
 	/**
 	 * 当前是否已收藏（供初始图标判定）；未提供时回退到
@@ -178,6 +181,7 @@ export class PluginDetailDrawer {
 	private similar: SimilarCandidate[];
 	private triggerCard: HTMLElement | null;
 	private openDetail: (pluginId: string) => void;
+	private installPlugin: (pluginInfo: PluginInfo) => void | Promise<void>;
 	private toggleFavorite: (pluginId: string) => boolean;
 	private isFavorited: (pluginId: string) => boolean;
 	private installedIds: Set<string>;
@@ -229,6 +233,7 @@ export class PluginDetailDrawer {
 		this.similar = opts.similar;
 		this.triggerCard = opts.triggerCard;
 		this.openDetail = opts.openDetail;
+		this.installPlugin = opts.installPlugin ?? (() => {});
 		this.toggleFavorite = opts.toggleFavorite;
 		this.isFavorited = opts.isFavorited ?? ((pid: string) => this.plugin.settings.favorites.includes(pid));
 		this.installedIds = opts.installedIds ?? new Set();
@@ -320,6 +325,30 @@ export class PluginDetailDrawer {
 			if (attempt < 20) window.setTimeout(() => tryFocus(attempt + 1), 50);
 		};
 		tryFocus();
+	}
+
+	/** 重建详情内容并保留滚动位置（安装/启用状态变化后刷新 UI） */
+	refreshContent() {
+		const scrollEl = this.drawerEl?.querySelector(".pt-detail-page-scroll") as HTMLElement | null;
+		const scrollTop = scrollEl?.scrollTop ?? 0;
+
+		// 清理旧内容注册的监听器/定时器，避免泄漏
+		this._cleanupFns.forEach((fn) => fn());
+		this._cleanupFns = [];
+		this._journalDispose?.();
+		this._journalDispose = undefined;
+		this.renderComp?.unload();
+		this.renderComp = null;
+
+		this.buildContent();
+
+		// 恢复滚动位置
+		if (scrollTop > 0) {
+			window.requestAnimationFrame(() => {
+				const newScrollEl = this.drawerEl?.querySelector(".pt-detail-page-scroll") as HTMLElement | null;
+				if (newScrollEl) newScrollEl.scrollTop = scrollTop;
+			});
+		}
 	}
 
 	/**
@@ -805,6 +834,19 @@ export class PluginDetailDrawer {
 				cls: "pt-detail-btn pt-detail-btn--enabled",
 				text: `✓ ${this.t("card.installed.on")}`,
 			});
+			// 直达该插件的设置选项面板（替代手动去 Obsidian 设置翻找）：
+			// 必须先 open 再 openTabById，否则设置面板未弹出时后者不生效（与 toolbar 齿轮一致）。
+			const settingsBtn = actions.createEl("button", {
+				cls: "pt-detail-btn",
+				attr: { type: "button", title: this.t("card.openSettings") },
+			});
+			setIcon(settingsBtn, "gear");
+			settingsBtn.createSpan({ text: this.t("card.openSettings") });
+			settingsBtn.addEventListener("click", () => {
+				const setting = asAppInternals(this.app).setting;
+				setting?.open?.();
+				setting?.openTabById?.(p.id);
+			});
 		} else if (isInstalled) {
 			const enableBtn = actions.createEl("a", {
 				cls: "pt-detail-btn",
@@ -819,13 +861,20 @@ export class PluginDetailDrawer {
 				new Notice(this.t("notice.market.opened"));
 			});
 		} else {
-			const installBtn = actions.createEl("a", {
+			const installBtn = actions.createEl("button", {
 				cls: "pt-detail-btn mod-cta",
-				text: this.t("card.install"),
-				attr: { href: `obsidian://show-plugin?id=${p.id}`, rel: "noopener noreferrer" },
+				attr: { type: "button" },
 			});
+			setIcon(installBtn, "download");
+			const installLabel = installBtn.createSpan({ text: this.t("card.install") });
 			installBtn.addEventListener("click", () => {
-				new Notice(this.t("notice.market.opened"));
+				installBtn.disabled = true;
+				installBtn.addClass("pt-detail-btn--loading");
+				installLabel.textContent = this.t("card.installing");
+				void Promise.resolve(this.installPlugin(p)).finally(() => {
+					// 安装流程结束后重建内容以展示已启用态
+					this.refreshContent();
+				});
 			});
 		}
 
@@ -1153,15 +1202,21 @@ export class PluginDetailDrawer {
 				card.createDiv({ cls: "pt-detail-similar-original", text: sim.name });
 			}
 
-			// 行3：推荐理由
-			if (sim.reason) {
-				card.createDiv({ cls: "pt-detail-similar-reason", text: sim.reason });
+			// 行3：插件简介（优先使用已翻译中文描述，无译文再回落原文）
+			const descText = sim.translatedDesc?.trim() || sim.description;
+			if (descText) {
+				card.createDiv({
+					cls: "pt-detail-similar-desc",
+					text: stripReviewNotice(cleanChineseSpaces(descText)),
+				});
 			}
 
-			// 行4：下载量
+			// 行4：下载量（与首页卡片使用同一 SVG 图标，保持视觉一致）
 			if (sim.downloads != null) {
 				const dl = card.createDiv({ cls: "pt-detail-similar-meta" });
-				dl.textContent = `↓ ${formatDownloads(sim.downloads)}`;
+				const iconWrap = dl.createSpan({ cls: "pt-detail-similar-dl-icon" });
+				appendSVG(iconWrap, ICON_DOWNLOAD);
+				dl.createSpan({ text: formatDownloads(sim.downloads) });
 			}
 
 			// 键盘可点击

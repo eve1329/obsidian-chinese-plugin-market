@@ -189,13 +189,12 @@ export interface RecallCandidate {
 	id: string;
 	name: string;
 	description: string;
+	/** 中文名（译文，可选）：模糊标题路的第二匹配目标（如"番茄"命中 nameZh"迷你番茄钟"） */
+	nameZh?: string;
 }
 
 /**
  * 本地零依赖召回：从全量插件中粗筛出"字面相关"的候选，作为 LLM 精排的输入。
- *
- * ⚠️ 已被取代：线上关键词召回现在是 ai.ts 的 BM25 倒排（bm25RecallScores），
- * 本函数已无生产调用点，仅剩单测引用，保留作对照。
  *
  * 设计动机（阶段 1 路线 B）：让 LLM 扫描全量插件库既昂贵又易触发 max_tokens 截断
  * （即用户遇到的 finish_reason=length）。改为「本地粗筛 → LLM 精排」两段式后，
@@ -242,6 +241,40 @@ export function localRecall(
 
 	scored.sort((a, b) => b.score - a.score);
 	return scored.slice(0, cap).map((s) => s.c);
+}
+
+/**
+ * 本地关键词召回（带分数版）：与 localRecall 同算法，但返回 `Map<插件id, 分数>`，
+ * 供上层做 RRF 融合。无命中返回空 Map。
+ */
+export function localRecallScores(
+	query: string,
+	allPlugins: RecallCandidate[],
+	cap: number
+): Map<string, number> {
+	const out = new Map<string, number>();
+	const q = query.toLowerCase().replace(/\s+/g, " ").trim();
+	const tokens = q.match(/[a-z0-9]+|[一-龥]/g) || [];
+	if (tokens.length === 0) return out;
+	for (const p of allPlugins) {
+		const name = (p.name || "").toLowerCase();
+		const desc = (p.description || "").toLowerCase();
+		let score = 0;
+		if (name.includes(q)) score += 3;
+		if (desc.includes(q)) score += 1;
+		for (const t of tokens) {
+			if (name.includes(t)) score += 2;
+			else if (desc.includes(t)) score += 1;
+		}
+		if (score > 0) out.set(p.id, score);
+	}
+	// 仅保留分数最高的前 cap 个（与 localRecall 一致），避免低分噪声进入融合
+	const top = Array.from(out.entries())
+		.sort((a, b) => b[1] - a[1])
+		.slice(0, cap);
+	out.clear();
+	for (const [id, s] of top) out.set(id, s);
+	return out;
 }
 
 // ──────────────────────────────────────────
@@ -295,27 +328,23 @@ export function jaroWinkler(a: string, b: string): number {
 }
 
 /**
- * 标题模糊匹配（第三路检索器）：把 query 与每个插件的 name 做 Jaro-Winkler，
- * 返回 `Map<插件id, 分数>`（相似度 ≥ minScore 且降序截断到 top）。
+ * 标题模糊匹配（第三路检索器）：把 query 与每个插件的 name / nameZh（中文名译文）
+ * 分别做 Jaro-Winkler 取较高分，返回 `Map<插件id, 分数>`（相似度 ≥ minScore 且降序截断到 top）。
  *
  * 目的：覆盖「用户只记得插件名的大概/首字母/拼写，但记不全」的场景——
  * 关键词精确匹配与向量语义都可能漏，标题模糊匹配能兜住（如查 "番茄" 命中
  * "番茄钟番茄工作法"、"notion" 命中 "Notion 增强"）。
+ * nameZh 作为第二目标后，中文查询对「英文原名 + 中文译名」的插件也能拼写容错
+ * （如 "迷你番茄" 命中 name="Minidoro" nameZh="迷你番茄钟"；子串居中的短查询
+ * 受 Jaro 匹配窗口限制打 0 分，由 BM25 三元组路兜底，两路互补）。
  *
  * @param query 用户输入
- * @param allPlugins 插件候选（只用 name）
+ * @param allPlugins 插件候选（用 name 与可选 nameZh）
  * @param top 最多保留多少条
  * @param minScore 相似度下限（默认 0.55，比 vault-curate 的 0.7 更宽松以兜住短名）
  */
-/**
- * 小写名缓存：插件 name 固定，避免每次模糊搜索对每插件重复 toLowerCase（O(N) 字符串分配）。
- *
- * 有上界。键是「历史见过的所有插件名」——插件被下架/改名后旧名仍留在表里，
- * 长会话下只增不减。上界刻意设得远高于任何真实插件规模（正常使用永不触发淘汰），
- * 仅作为异常增长的兜底，避免无界占用内存。
- */
+/** 小写名缓存：插件 name/nameZh 固定，避免每次模糊搜索对每插件重复 toLowerCase（O(N) 字符串分配） */
 const lowerNameCache = new Map<string, string>();
-const LOWER_NAME_CACHE_MAX = 20000;
 
 export function fuzzyTitleScores(
 	query: string,
@@ -328,30 +357,44 @@ export function fuzzyTitleScores(
 	const out: Array<[string, number]> = [];
 	// 字符粗筛用的 q 字符集（只算一次，避免每插件重建）
 	const qChars = q.length > 0 ? new Set(q) : null;
-	for (const p of allPlugins) {
-		const raw = p.name || "";
-		if (!raw) continue;
-		let title = lowerNameCache.get(raw);
-		if (title === undefined) {
-			title = raw.toLowerCase();
-			// 达上界时淘汰最早插入的一项（Map 迭代序 = 插入序），保证缓存不无界增长
-			if (lowerNameCache.size >= LOWER_NAME_CACHE_MAX) {
-				const oldest = lowerNameCache.keys().next().value;
-				if (oldest !== undefined) lowerNameCache.delete(oldest);
-			}
-			lowerNameCache.set(raw, title);
+	const lowerCached = (raw: string): string => {
+		if (!raw) return "";
+		let v = lowerNameCache.get(raw);
+		if (v === undefined) {
+			v = raw.toLowerCase();
+			lowerNameCache.set(raw, v);
 		}
-		if (!title) continue;
-		// 快速否决（严格安全）：q 的所有唯一字符都不在 title → 匹配字符必为 0，Jaro 分数必为 0 < minScore，跳过完整 Jaro-Winkler。
+		return v;
+	};
+	for (const p of allPlugins) {
+		const title = lowerCached(p.name || "");
+		const titleZh = lowerCached(p.nameZh || "");
+		if (!title && !titleZh) continue;
+		// 快速否决（严格安全）：q 的所有唯一字符都不在两个标题里 → 匹配字符必为 0，
+		// Jaro 分数必为 0 < minScore，跳过完整 Jaro-Winkler。
 		// 仅此严格情形可安全跳过（不改召回；任何有公共字符的情况仍跑 Jaro，避免误杀）
 		if (qChars) {
 			let allMissing = true;
 			for (const ch of qChars) {
-				if (title.indexOf(ch) !== -1) { allMissing = false; break; }
+				if (title.indexOf(ch) !== -1 || titleZh.indexOf(ch) !== -1) { allMissing = false; break; }
 			}
 			if (allMissing) continue;
 		}
-		const score = jaroWinkler(q, title);
+		// 字符覆盖门（2026-09-18「打卡」真机截图暴露）：query ≤2 字时 Jaro 仅共享 1 字
+		// 即得 (1/2+1/len+1)/3 ≥ 0.567，全过 0.55 阈值 → 「锁卡/桌卡/打印」等单字重叠
+		// 家族 flood 顶部（50 条标题命中淹掉真目标）。门：query 全部字符出现在该标题
+		// 才计分（「打卡」⊄「锁卡」拒、「打卡」⊂「打卡钟」留）；≥3 字 query 不动，
+		// 保住 P-0061 的前缀/拼写容错场景。per-target 判定：两个标题各自独立过门。
+		const strict = q.length <= 2;
+		const covers = (t: string): boolean => {
+			if (!strict || !qChars) return true;
+			for (const ch of qChars) if (t.indexOf(ch) === -1) return false;
+			return true;
+		};
+		const score = Math.max(
+			title && covers(title) ? jaroWinkler(q, title) : 0,
+			titleZh && covers(titleZh) ? jaroWinkler(q, titleZh) : 0
+		);
 		if (score >= minScore) out.push([p.id, score]);
 	}
 	out.sort((a, b) => b[1] - a[1]);
@@ -393,22 +436,7 @@ export function normalizeVector(v: number[]): number[] {
 
 /**
  * 从一组条目向量中，取与 queryVec 余弦相似度最高的前 k 个。
- *
- * 实现为「有界最小堆」的部分选择，把选择阶段从 O(n log n) 降到 O(n log k)。
- *
- * 收益有限，别高估：实测（6000 条 × 512 维、k=300，见 scripts/bench-search-perf.mjs
- * 实验 3）整体约 1.35x。瓶颈其实是点积本身（n × dim 次乘加），选择阶段只占小头。
- * 曾以为「省下 n 个 { index, score } 对象分配」是主要收益，实测并不成立——改用并行
- * 类型化数组反而更慢（比较器要读两个数组，抵消了分配收益），故未采用。
- *
- * tie-break 与旧实现（score 降序 + Array.sort 稳定序）保持一致：同分按 index 升序。
- *
- * 维度不一致的条目会被拒绝并**整体抛错**（旧实现是静默按较短维度截断）。余弦在维度
- * 不同时没有定义，静默截断会把「索引与 query 来自不同 embedding 模型」这类 bug
- * 伪装成正常排序结果。
- *
  * @returns [{ index, score }]，按 score 降序，最多 k 个；k<=0 或无向量返回空。
- * @throws 存在与 queryVec 维度不同的条目时抛出（调用方应视为召回失败并降级）。
  */
 export function topKBySimilarity(
 	queryVec: number[],
@@ -420,93 +448,27 @@ export function topKBySimilarity(
 		return [];
 	}
 	const dim = queryVec.length;
+	for (let vi = 0; vi < itemVecs.length; vi++) {
+		const v = itemVecs[vi];
+		if (!v || v.length !== dim) {
+			throw new Error(`向量维度不一致：query=${dim}，item=${v?.length ?? 0}`);
+		}
+	}
 	// 归一化 query（索引向量已在 buildVectorIndex 归一化，norm=1）
 	const q = normalizeVector(queryVec);
-	const n = itemVecs.length;
-	const limit = Math.min(k, n);
-
-	// 堆内并行数组：heapScore 是堆序键，heapIdx 只随交换同步搬运（不参与比较）。
-	const heapIdx = new Int32Array(limit);
-	const heapScore = new Float64Array(limit);
-	let size = 0;
-
-	/** a 是否比 b 更差（更差者浮到堆顶）。score 小者差；同分 index 大者差。 */
-	const isWorse = (iA: number, sA: number, iB: number, sB: number): boolean =>
-		sA < sB || (sA === sB && iA > iB);
-
-	const swap = (a: number, b: number): void => {
-		const ti = heapIdx[a];
-		heapIdx[a] = heapIdx[b];
-		heapIdx[b] = ti;
-		const ts = heapScore[a];
-		heapScore[a] = heapScore[b];
-		heapScore[b] = ts;
-	};
-
-	const siftUp = (c: number): void => {
-		while (c > 0) {
-			const p = (c - 1) >> 1;
-			if (!isWorse(heapIdx[c], heapScore[c], heapIdx[p], heapScore[p])) break;
-			swap(c, p);
-			c = p;
-		}
-	};
-
-	const siftDown = (c: number): void => {
-		for (;;) {
-			const l = 2 * c + 1;
-			if (l >= size) break;
-			const r = l + 1;
-			// 取左右孩子中更差的那个
-			const m = r < size && isWorse(heapIdx[r], heapScore[r], heapIdx[l], heapScore[l]) ? r : l;
-			if (!isWorse(heapIdx[m], heapScore[m], heapIdx[c], heapScore[c])) break;
-			swap(c, m);
-			c = m;
-		}
-	};
 
 	// 纯点积：所有向量已归一化 → 余弦 = dot。单次扫描，避免任何 norm 计算。
 	// itemVecs 元素为 ArrayLike<number>（number[] 或 Float32Array 均可），
 	// 直接吃 getAllVecs 的 Float32Array，消除加载时的 Array.from 二次转换。
-	let dimMismatch = 0;
-	for (let vi = 0; vi < n; vi++) {
+	const scored: { index: number; score: number }[] = [];
+	for (let vi = 0; vi < itemVecs.length; vi++) {
 		const v = itemVecs[vi];
-		// 维度必须一致：余弦在不同维度上没有定义。旧实现写 `i < dim && i < v.length`，
-		// 对维度不一致的向量会**静默按较短维度截断** —— 于是「query 向量来自旧模型」
-		// 这类 bug 会给出看似正常的错误排序，不报错、不告警（曾导致换 embedding 模型后
-		// 静默错排）。这里改为显式拒绝，把同类问题从「悄悄算错」变成「立刻可见」。
-		if (v.length !== dim) {
-			dimMismatch++;
-			continue;
-		}
 		let dot = 0;
 		for (let i = 0; i < dim; i++) dot += q[i] * v[i];
-		if (dot < minScore) continue;
-
-		if (size < limit) {
-			heapIdx[size] = vi;
-			heapScore[size] = dot;
-			siftUp(size);
-			size++;
-		} else if (isWorse(heapIdx[0], heapScore[0], vi, dot)) {
-			// 优于当前堆顶（前 k 中最差的那个）→ 替换并重新下沉
-			heapIdx[0] = vi;
-			heapScore[0] = dot;
-			siftDown(0);
-		}
+		if (dot >= minScore) scored.push({ index: vi, score: dot });
 	}
-
-	if (dimMismatch > 0) {
-		throw new Error(
-			`topKBySimilarity: 向量维度不一致（query=${dim} 维，${dimMismatch}/${n} 条条目维度不同）——` +
-				`通常意味着索引与查询来自不同的 embedding 模型，或切换模型后索引未重建`
-		);
-	}
-
-	const out: { index: number; score: number }[] = new Array(size);
-	for (let i = 0; i < size; i++) out[i] = { index: heapIdx[i], score: heapScore[i] };
-	out.sort((a, b) => b.score - a.score || a.index - b.index);
-	return out;
+	scored.sort((a, b) => b.score - a.score);
+	return scored.slice(0, k);
 }
 
 /**
@@ -527,9 +489,6 @@ export function contentHash(texts: string[]): string {
 
 /**
  * 混合召回合并：把向量召回与关键词召回的结果取【并集】。
- *
- * ⚠️ 已被取代：线上融合改用 RRF（rrfFuse + topNFused），它按名次融合而非简单并集，
- * 对异构分数量纲更稳。本函数已无生产调用点，仅 recall.test.ts 引用，保留作对照。
  *
  * 目的（阶段 2.5 增强）：向量能命中字面无重叠的语义相关项（跨语言），
  * 关键词能补回向量漏掉的字面精确项。两者并集可显著提升召回率。

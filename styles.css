@@ -2726,15 +2726,16 @@ button.pt-card-install-btn--installed {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
-/* 行3：推荐理由（背景块 + 左边框） */
-.pt-detail-similar-reason {
+/* 行3：插件简介（最多两行，可扫描过滤） */
+.pt-detail-similar-desc {
 	margin-top: 6px;
-	padding: 6px 10px;
-	background: var(--background-secondary);
-	border-radius: 6px;
 	font-size: var(--pt-text-base);
-	color: var(--pt-text-strong, var(--text-normal));
+	color: var(--pt-text-muted);
 	line-height: 1.5;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
 }
 /* 行4：下载量 meta */
 .pt-detail-similar-meta {
@@ -2742,6 +2743,14 @@ button.pt-card-install-btn--installed {
 	font-size: var(--pt-text-xs);
 	color: var(--pt-text-muted);
 	opacity: 0.7;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+.pt-detail-similar-meta .pt-detail-similar-dl-icon svg {
+	display: block;
+	width: 10px;
+	height: 10px;
 }
 /* 面板级引导语 */
 .pt-detail-similar-hint {
@@ -3170,6 +3179,8 @@ button.pt-card-install-btn--installed {
 	transition: background var(--pt-duration-fast) var(--pt-ease), color var(--pt-duration-fast) var(--pt-ease),
 		border-color var(--pt-duration-fast) var(--pt-ease);
 	margin-top: var(--pt-space-2xs);
+	/* 覆写 Obsidian 默认 button 自带的 box-shadow */
+	box-shadow: none;
 }
 .pt-drawer-close:hover {
 	background: var(--pt-surface-hover, var(--background-modifier-hover));
@@ -3292,6 +3303,8 @@ button.pt-card-install-btn--installed {
 	cursor: pointer;
 	transition: all 0.15s;
 	white-space: nowrap;
+	/* 覆写 Obsidian 默认 button 自带的 box-shadow */
+	box-shadow: none;
 }
 .pt-detail-btn:hover {
 	background: var(--background-secondary);
@@ -5936,50 +5949,279 @@ button.pt-card-install-btn--installed {
 	text-align: left;
 }
 
-/* ── 搜索诊断（设置页）：展示最近一次搜索的分段计时 ──
-   与 pt-setting-full-width / pt-setting-control-full 配合使用。
-   进度条走原生 <progress>，避免动态宽度需要内联样式。 */
-.pt-timing-box {
-	width: 100%;
-	text-align: left;
-}
-.pt-timing-total {
-	font-weight: 600;
-}
-.pt-timing-sub,
-.pt-timing-counters,
-.pt-timing-empty {
-	color: var(--text-muted);
-	font-size: var(--font-ui-smaller);
-}
-.pt-timing-hint {
-	margin-top: 8px;
-	color: var(--text-faint);
-	font-size: var(--font-ui-smaller);
-}
-.pt-timing-row {
+/* ──────────────────────────────────────────
+   已装插件管理：增强原生「设置 → 社区插件」页
+   注入元素统一带 data-cpm-owned，卸载时整块移除。
+   ────────────────────────────────────────── */
+
+/* 筛选栏：注入到原生「已安装插件」标题栏的控件区 */
+.cpm-filter-bar {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+	flex-wrap: wrap;
+}
+.cpm-filter-keyword {
+	width: 160px;
+}
+/* 分组 / 状态两个原生下拉（视觉随 Obsidian 主题） */
+.cpm-filter-group,
+.cpm-filter-status {
+	margin: 0 2px;
+}
+/* 独立计数文本：aria-live，推到最右 */
+.cpm-filter-count {
+	font-size: var(--font-ui-smaller, 12px);
+	color: var(--text-muted);
+	margin-left: auto;
+	white-space: nowrap;
+}
+/* 图标按钮（管理分组 / 设置面板删除·新增） */
+.extra-button.cpm-icon-tags,
+.extra-button.cpm-icon-trash,
+.extra-button.cpm-icon-plus {
+	margin-left: 4px;
+}
+
+/* CSS 片段页工具栏：放在标题 .setting-item-info 内，与标题文字左对齐 */
+.cpm-filter-bar.cpm-css-toolbar {
+	margin-top: 10px;
+	margin-bottom: 6px;
+	padding: 0;
+}
+
+/* 已安装插件页工具栏：放在标题行右侧 control 里，与原生图标并成一行 */
+.setting-item-control .cpm-filter-bar {
+	flex-wrap: nowrap;
+	gap: 6px;
+	margin-left: 8px;
+}
+.setting-item-control .cpm-filter-keyword {
+	width: 120px;
+	min-width: 80px;
+	flex-shrink: 1;
+}
+.setting-item-control .cpm-filter-group,
+.setting-item-control .cpm-filter-status {
+	flex-shrink: 0;
+}
+
+/* 分组徽标：贴在插件名末尾，颜色由 --cpm-group-color 驱动 */
+.cpm-group-badge {
+	margin-left: 6px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	font-size: var(--font-ui-smaller, 11px);
+	line-height: 1.4;
+	white-space: nowrap;
+	vertical-align: middle;
+	color: var(--text-on-accent, #fff);
+	background: var(--cpm-group-color, var(--interactive-accent));
+}
+
+/* 备注：空态弱化提示可点击 */
+.cpm-note-field {
+	cursor: text;
+}
+.cpm-note-empty {
+	opacity: 0.55;
+	font-style: italic;
+}
+.cpm-note-input {
+	width: 100%;
+	min-height: 28px;
+	max-height: 160px;
+	resize: none;
+	overflow-y: auto;
+	font: inherit;
+}
+
+/* CSS 片段空状态提示（无 .css 文件时显示） */
+.cpm-css-empty-state {
+	margin: 12px 0 16px;
+	padding: 10px 14px;
+	border: 1px dashed var(--background-modifier-border);
+	border-radius: var(--radius-s, 6px);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller, 12px);
+	line-height: 1.6;
+}
+
+/* 插件设置页内的 CSS 片段管理列表 */
+.cpm-css-settings-list {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 8px;
+}
+.cpm-css-settings-row {
+	align-items: flex-start;
+}
+.cpm-css-settings-row .cpm-note-field {
 	margin-top: 4px;
 }
-.pt-timing-name {
-	flex: 0 0 8em;
-	font-size: var(--font-ui-smaller);
+
+/* 分组管理模态框（GroupManagementModal） */
+.cpm-group-modal-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 12px;
 }
-.pt-timing-ms {
-	flex: 0 0 5em;
-	font-size: var(--font-ui-smaller);
-	text-align: right;
+.cpm-group-composer {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	margin-bottom: 4px;
+}
+.cpm-group-composer .text-input {
+	min-width: 200px;
+}
+.cpm-group-row {
+	align-items: center;
+}
+.cpm-group-row .setting-item-name {
+	font-size: var(--font-ui-small, 13px);
+}
+.cpm-group-row .setting-item-control {
+	gap: 6px;
+}
+.cpm-group-usage {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller, 12px);
+}
+.cpm-group-empty,
+.cpm-group-count-hint {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller, 12px);
+	line-height: 1.6;
+}
+.cpm-group-count-hint {
+	margin-bottom: 2px;
+}
+
+/* 设置面板分组列表：成员计数（分组使用计数） */
+.pt-profile-count {
+	font-size: var(--font-ui-smaller, 12px);
+	color: var(--text-muted);
+	margin-left: 6px;
+}
+/* 无自定义分组时的空态引导 */
+.pt-manage-empty {
+	font-size: var(--font-ui-smaller, 12px);
+	color: var(--text-muted);
+	padding: 2px 0 8px;
+}
+/* 分组行内的图标按钮（重置颜色 / 删除）间距 */
+.pt-profile-row .extra-button {
+	margin-left: 4px;
+}
+
+/* 分组按钮：图标按钮（clickable-icon），与备注/打开按钮视觉统一 */
+.cpm-group-btn {
+	width: 24px;
+	height: 24px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.cpm-group-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.cpm-group-btn svg {
+	width: 16px;
+	height: 16px;
+}
+
+/*
+ * 未命中筛选的行隐藏而非删除：原生页面随时可能重绘重建 DOM，
+ * 删除后 enhancer 无法再识别该行；隐藏则由 enhancer 每次重新计算可见性。
+ */
+/* 插件行即 .setting-item，用 .setting-item.cpm-filtered-out（特异性 0,2,0）压过主题
+   .setting-item(0,1,0)，无需 !important */
+.setting-item.cpm-filtered-out {
+	display: none;
+}
+
+/* 设置面板：分组管理行 */
+.pt-manage-tag {
+	margin-left: 8px;
+	font-size: var(--font-ui-smaller, 12px);
 	color: var(--text-muted);
 }
-.pt-timing-row progress {
-	flex: 1 1 auto;
-	height: 6px;
+.pt-manage-color {
+	width: 28px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid var(--background-modifier-border);
+	background: transparent;
 }
-.pt-timing-bar-llm {
-	opacity: 0.5;
+
+/* 设置面板：直链 Beta 插件管理列表 */
+.pt-beta-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	width: 100%;
 }
-.pt-timing-counters {
-	margin-top: 8px;
+.pt-beta-empty {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller, 12px);
+}
+.pt-beta-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 2px;
+}
+.pt-beta-count {
+	font-weight: var(--font-semibold, 600);
+}
+.pt-beta-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 4px 0;
+	border-top: 1px solid var(--background-modifier-border);
+}
+.pt-beta-name {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.pt-beta-ver {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller, 12px);
+}
+.pt-beta-kind {
+	padding: 0 6px;
+	border-radius: 4px;
+	background: var(--background-modifier-hover);
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller, 11px);
+	flex-shrink: 0;
+}
+.pt-beta-actions {
+	display: flex;
+	gap: 6px;
+	flex-shrink: 0;
+}
+.pt-beta-actions button {
+	margin: 0;
 }
