@@ -2665,6 +2665,59 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		return `.obsidian/plugins/${this.manifest.id}/sql-wasm.wasm`;
 	}
 
+	/**
+	 * SQLite WASM 的自助修复入口。
+	 *
+	 * 旧版 Release 只上传了 main.js，导致 Windows 手动安装后缺少这个运行时文件。
+	 * 设置页按钮通过 Obsidian 的 requestUrl 端口下载并写入插件目录；Release 资产优先，
+	 * 仓库 raw 文件兜底。校验 WASM magic，避免把代理返回的 HTML 错误页写进插件目录。
+	 */
+	async repairSqliteRuntime(): Promise<void> {
+		if (isMobileEnvironment()) throw new Error("移动端不支持本地向量运行时");
+		const adapter = this.app.vault.adapter;
+		if (await adapter.exists(this.sqlWasmFilePath)) {
+			this.vectorStoreInitFailed = false;
+			return;
+		}
+
+		const version = String(this.manifest.version ?? "").trim();
+		const urls = [
+			version
+				? `https://github.com/miaoziguan/obsidian-chinese-plugin-market/releases/download/${version}/sql-wasm.wasm`
+				: "",
+			"https://raw.githubusercontent.com/miaoziguan/obsidian-chinese-plugin-market/main/sql-wasm.wasm",
+		].filter(Boolean);
+		let lastError = "下载失败";
+		for (const url of urls) {
+			try {
+				const response = await getHttpClient().request({ url, method: "GET" });
+				if (response.status < 200 || response.status >= 300 || !response.arrayBuffer) {
+					lastError = `HTTP ${response.status}`;
+					continue;
+				}
+				const bytes = new Uint8Array(response.arrayBuffer);
+				if (
+					bytes.length < 1024 ||
+					bytes[0] !== 0x00 ||
+					bytes[1] !== 0x61 ||
+					bytes[2] !== 0x73 ||
+					bytes[3] !== 0x6d
+				) {
+					lastError = "返回内容不是有效 WASM";
+					continue;
+				}
+				const binary = new ArrayBuffer(bytes.byteLength);
+				new Uint8Array(binary).set(bytes);
+				await adapter.writeBinary(this.sqlWasmFilePath, binary);
+				this.vectorStoreInitFailed = false;
+				return;
+			} catch (e: unknown) {
+				lastError = e instanceof Error ? e.message : String(e);
+			}
+		}
+		throw new Error(`SQLite 运行时自动下载失败：${lastError}`);
+	}
+
 	/** 旧版二进制索引路径（P3 格式，仅做一次性兼容读取迁移） */
 	private get legacyVectorBinFilePath(): string {
 		return `.obsidian/plugins/${this.manifest.id}/vector-index.bin`;

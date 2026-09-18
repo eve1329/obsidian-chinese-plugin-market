@@ -559,6 +559,10 @@ export class TranslatorSettingTab extends PluginSettingTab {
 								visible: () => s.embeddingSource === "local",
 								desc: this.t("settings.embedding.ready.checking"),
 								render: (setting) => {
+									let repairButton: {
+										setDisabled(disabled: boolean): unknown;
+										setButtonText(text: string): unknown;
+									} | null = null;
 									const paint = () => {
 										void this.plugin
 											.getLocalVectorStatus()
@@ -582,12 +586,28 @@ export class TranslatorSettingTab extends PluginSettingTab {
 													parts.push("下载：✓ 模型就绪");
 												}
 												if (!st.sqliteReady && !st.sqlWasm) {
-													parts.push(`（缺 sql-wasm.wasm，需 ./sync.sh --with-ml）`);
+													parts.push(this.t("settings.embedding.sqlite.missing"));
 												}
+												repairButton?.setDisabled(st.sqliteReady || st.sqlWasm);
 												setting.descEl.setText(parts.join(" · "));
 											})
-											.catch(() => setting.descEl.setText(this.t("settings.embedding.ready.fail")));
+												.catch(() => setting.descEl.setText(this.t("settings.embedding.ready.fail")));
 									};
+									setting.addButton((button) => {
+										repairButton = button;
+										button.setButtonText(this.t("settings.embedding.sqlite.repair")).onClick(async () => {
+											button.setDisabled(true).setButtonText(this.t("settings.embedding.sqlite.repairing"));
+											try {
+												await this.plugin.repairSqliteRuntime();
+												new Notice(this.t("settings.embedding.sqlite.repaired"), 5000);
+											} catch (e: unknown) {
+												const msg = e instanceof Error ? e.message : String(e);
+												new Notice(this.t("settings.embedding.sqlite.repairFailed", { msg }), 8000);
+											} finally {
+												paint();
+											}
+										});
+									});
 									paint();
 									// 下载状态实时变化（首载 135MB 冷载数分钟）：设置页打开期间轮询刷新，元素脱离后自清理
 									const iv = window.setInterval(() => {
