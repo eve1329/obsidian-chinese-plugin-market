@@ -316,9 +316,9 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 							.setValue(this.name)
 							.onChange((v) => (this.name = v));
 						text.inputEl.setCssStyles({ width: "100%" });
-						// 回车即保存
+						// 回车即保存（IME 确认候选的 Enter 不提交，isComposing 守卫）
 						text.inputEl.addEventListener("keydown", (e: KeyboardEvent) => {
-							if (e.key === "Enter") {
+							if (e.key === "Enter" && !e.isComposing) {
 								e.preventDefault();
 								this.commit();
 							}
@@ -634,6 +634,9 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 		});
 		searchInput.addEventListener("compositionend", () => {
 			composing = false;
+			// 消除悬挂防抖计时器（Chrome input→end / Safari end→input 两序下均幂等），
+			// 避免 compositionend 的 applySearchInput 与超时回调重复触发
+			window.clearTimeout(ctx.debounceTimer);
 			// 输入法结束后立即触发一次
 			ctx.applySearchInput();
 		});
@@ -646,6 +649,9 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 			// 清除按钮可见性即时同步（不等 debounce）
 			syncClearBtn();
 			window.clearTimeout(ctx.debounceTimer);
+			// composition 期间不做任何状态动作（含空值快速通道），统一等 compositionend——
+			// 否则组合中途 value 瞬空会清 searchQuery/AI 结果致列表闪烁
+			if (composing) return;
 			// 空字符串即时响应（不等 debounce），立即显示引导页/全量列表
 			const val = searchInput.value.trim();
 			if (val === "" && ctx.searchQuery !== "") {
@@ -663,6 +669,10 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 		// Enter 键：AI 模式下触发 AI 搜索；其余模式立即刷新本地过滤
 		// （若数据尚未加载，先懒加载再渲染，避免首次直接 Enter 出现空结果）
 		searchInput.addEventListener("keydown", (e) => {
+			// IME composition 期间按键语义交给输入法：Enter=确认候选、Esc=取消候选，
+			// 不得触发检索/清空（forum 105167 同款回归，Obsidian 1.9.12 tracked）；
+			// keyCode 229 为老旧 WebView 兜底（isComposing 不全时）。
+			if (e.isComposing || e.keyCode === 229) return;
 			void (async () => {
 				// Esc 清空搜索框（符合输入控件直觉）
 				if (e.key === "Escape") {
