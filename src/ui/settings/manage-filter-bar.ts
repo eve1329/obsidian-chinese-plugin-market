@@ -34,7 +34,18 @@ export class ManageFilterBar {
 		this.keywordInput = createEl("input", { cls: "cpm-filter-keyword" });
 		this.keywordInput.type = "search";
 		this.keywordInput.placeholder = pickLang("manage.filter.keyword.ph");
-		this.keywordInput.addEventListener("input", () => this.options.onChange());
+		// IME composition 门：组合期间不以拼音串触发重过滤，end 时统一 onChange
+		let keywordComposing = false;
+		this.keywordInput.addEventListener("compositionstart", () => {
+			keywordComposing = true;
+		});
+		this.keywordInput.addEventListener("compositionend", () => {
+			keywordComposing = false;
+			this.options.onChange();
+		});
+		this.keywordInput.addEventListener("input", () => {
+			if (!keywordComposing) this.options.onChange();
+		});
 		this.containerEl.appendChild(this.keywordInput);
 
 		// 分组下拉：原生 DropdownComponent，视觉与原生设置项一致
