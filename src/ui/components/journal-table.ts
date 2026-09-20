@@ -159,7 +159,18 @@ export function renderJournalTable(
 			attr: { type: "text", placeholder: t("journal.search") },
 		});
 		search.value = filter.search;
+		// IME composition 门：组合期间不以原始拼音串重过滤（闪烁），end 时统一刷新
+		let journalComposing = false;
+		search.addEventListener("compositionstart", () => {
+			journalComposing = true;
+		});
+		search.addEventListener("compositionend", () => {
+			journalComposing = false;
+			filter.search = search.value;
+			drawBody();
+		});
 		search.addEventListener("input", () => {
+			if (journalComposing) return;
 			filter.search = search.value;
 			drawBody();
 		});
