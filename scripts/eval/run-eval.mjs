@@ -190,7 +190,7 @@ function rank(query, idx, tok) {
 	// trad 修复配套：生产 embed 的是 t2s(query)，缓存键同构（简体 query 的 t2s=自身，繁体键=简体孪生）
 		const vectorScores = new Map(vecCache.perQuery[B.t2sForEmbed(query)] ?? vecCache.perQuery[query] ?? []);
 	const localScores = recallScores(query, idx, tok);
-	const fuzzyScores = fuzzyTitleScores(query, plugins);
+	const fuzzyScores = fuzzyTitleScores(B.t2sForEmbed(query), plugins);
 	const fused =
 		vectorScores.size > 0
 			? rrfFuse([vectorScores, localScores, fuzzyScores], [1.0, 1.0, 0.5])
@@ -207,7 +207,8 @@ async function parityCheck(triRankedByQuery) {
 	);
 	let bad = 0;
 	for (const { q } of evalSet.queries.slice(0, 5)) {
-		searcher.vectorRecallScores = async () => new Map(vecCache.perQuery[q] ?? []);
+		const qk = B.t2sForEmbed(q);
+		searcher.vectorRecallScores = async () => new Map(vecCache.perQuery[qk] ?? vecCache.perQuery[q] ?? []);
 		const r = await searcher.localSearch(q, plugins);
 		const a = r.rankedIds.slice(0, 20).join(",");
 		const b = triRankedByQuery[q].slice(0, 20).join(",");

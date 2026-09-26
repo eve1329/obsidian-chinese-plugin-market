@@ -39,7 +39,7 @@ for (const { q } of evalSet.queries) {
   const qv = qo.data;
   const sc = vecs.map((b, i) => { let s = 0; for (let d = 0; d < dim; d++) s += qv[d] * b[d]; return [pool[i].id, s]; });
   perQuery[qk] = sc.filter(([, s]) => s >= 0.3).sort((a, b) => b[1] - a[1]).slice(0, 300).map(([id, s]) => [id, +s.toFixed(5)]);
-  console.log("q done:", q, perQuery[q].length);
+  console.log("q done:", q, perQuery[qk].length);
 }
 fs.writeFileSync(path.join(TASK, "eval-vec-cache.json"), JSON.stringify({ savedAt: new Date().toISOString(), dim, zhSource: "vault-runtime", perQuery }));
 console.log("DONE eval-vec-cache.json");
