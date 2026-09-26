@@ -69,7 +69,8 @@ export function renderInlineNoteEditor(
 				if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
 					event.preventDefault();
 					commit(true);
-				} else if (event.key === "Escape") {
+				} else if (event.key === "Escape" && !event.isComposing) {
+					// IME 取消候选的 Esc 不关闭编辑器（否则丢弃未保存备注）
 					event.preventDefault();
 					commit(false);
 				}

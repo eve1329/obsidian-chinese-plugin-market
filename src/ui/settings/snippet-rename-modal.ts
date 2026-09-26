@@ -35,7 +35,8 @@ export class SnippetRenameModal extends Modal {
 					this.value = v;
 				});
 				text.inputEl.addEventListener("keydown", (event: KeyboardEvent) => {
-					if (event.key === "Enter") this.commit();
+					// IME 确认候选的 Enter 不提交重命名（isComposing 守卫）
+					if (event.key === "Enter" && !event.isComposing) this.commit();
 				});
 			});
 
