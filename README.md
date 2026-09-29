@@ -1,4 +1,4 @@
-# 🀄 Chinese Market —— 重建 Obsidian 生态的巴别塔，实现天下大同
+# 🀄 Chinese Market —— 中文社区插件市场 · 重建巴别塔，实现天下大同
 
 > 传说里，人类想共建一座通天高塔。
 > 语言变乱。工程停工。人四散。
@@ -21,7 +21,7 @@
 
 Obsidian 的社区插件市场是座宝库。
 
-但这座宝库的门牌，全是英文写的。
+但这座宝库的门牌，全是英文。
 
 中文用户撞上三堵墙。一堵比一堵高。
 
@@ -67,7 +67,7 @@ Chinese Market 把三堵墙逐一打通。
 
 是在中文这一侧，重建一整套基础设施。
 
-检索、翻译、理解、决策、安装、配置、更新、管理、复盘。八个环节，一条链路。
+发现、理解、决策、安装、配置、更新、管理、复盘。八个环节，一条链路。
 
 ### 设计理念 —— 插件一条龙
 
@@ -77,14 +77,14 @@ Chinese Market 把三堵墙逐一打通。
 
 我们在同一个中文界面里，一次做完。
 
-- **发现。** 三种搜索、八种排序、五类推荐。把候选捞出来。
-- **理解。** 卡片 + 详情抽屉。README 译文、AI 洞察、相似推荐、依赖图谱、版本历史。把插件看懂。
-- **决策。** 对比托盘并排比较。AI 给结论。还能导出 Markdown 或截图。
-- **安装。** 一键安装。直链装 Beta 与主题。可固定版本。依赖自动补齐。
-- **配置。** 设置页全翻译。别的插件那套英文设置项，打开就是中文。两条通道覆盖：原生 `Setting` 组件，以及 React / Vue 自绘页。
-- **更新。** 更新页签。批量更新。健康度徽标。风险降级。红点提醒。
-- **管理。** 启用停用、卸载、组合一键切换。官方面板增强：分组、备注、筛选。CSS 片段批量操作。
-- **复盘。** 收藏分组，沉淀你的工具箱。「我的插件足迹」记评分、弃用原因与动态，可导出 Markdown。
+- **发现：** 三种搜索、八种排序、五类推荐。把候选捞出来。
+- **理解：** 卡片 + 详情抽屉。README 译文、AI 洞察、相似推荐、依赖图谱、版本历史。把插件看懂。
+- **决策：** 对比托盘并排比较。AI 给结论。还能导出 Markdown 或截图。
+- **安装：** 一键安装。直链装 Beta 与主题。可固定版本。依赖自动补齐。
+- **配置：** 设置页全翻译。别的插件那套英文设置项，打开就是中文。两条通道覆盖原生 `Setting` 组件，以及 React / Vue 自绘页。
+- **更新：** 更新页签。批量更新。健康度徽标。风险降级。红点提醒。
+- **管理：** 启用停用、卸载、组合一键切换。官方面板增强分组、备注与筛选。CSS 片段批量操作。
+- **复盘：** 收藏分组，沉淀你的工具箱。「我的插件足迹」记评分、弃用原因与动态，可导出 Markdown。
 
 为什么这件事关键？
 
@@ -112,14 +112,14 @@ Chinese Market 把三堵墙逐一打通。
 
 - 依赖图谱算出缺什么 → 一键补齐。
 - 足迹记下为什么弃用 → 下次不再踩同一个坑。
-- 健康度判断维护状态 → 决定这一次更不更新。
+- 健康度判断维护状态 → 决定这一次要不要更新。
 - 对比得出的结论 → 导出分享给同样在纠结的人。
 
 八个环节，就是塔的八层。
 
 一层一层往上砌，中间不留缝。
 
-而「配置」这一层，往往是最后一段英文——也是最后一段路。
+而「配置」这一层，往往是最后一处英文——也是最后一段路。
 
 ---
 
@@ -147,9 +147,9 @@ Chinese Market 把三堵墙逐一打通。
 
 ### 使用，只有三步
 
-1. **搜。** 打中文。「思维导图」「日历」「同步」。想到什么打什么。
-2. **读。** 看卡片上的译名与描述。点开详情，读翻译后的 README、相似推荐、依赖关系。
-3. **装。** 点安装。需要稳妥时，先在详情页锁定一个版本。
+1. **搜：** 打中文。「思维导图」「日历」「同步」。想到什么打什么。
+2. **读：** 看卡片上的译名与描述。点开详情，读翻译后的 README、相似推荐、依赖关系。
+3. **装：** 点安装。需要稳妥时，先在详情页锁定一个版本。
 
 ### 你不需要配置任何东西
 
@@ -170,11 +170,11 @@ Chinese Market 把三堵墙逐一打通。
 
 主视图分五个页签（命令「插件搜索」）：
 
-- **浏览。** 默认卡片流。搜索、筛选、排序都在这里。
-- **更新。** 已安装插件的可用更新。带数量徽标。支持批量处理。
-- **直链。** 通过直链安装的 Beta 插件与主题。
-- **CSS 片段。** vault 里的片段，可分组、可批量切换。
-- **收藏。** 你自己的工具箱。支持分组。
+- **浏览：** 默认卡片流。搜索、筛选、排序都在这里。
+- **更新：** 已安装插件的可用更新。带数量徽标。支持批量处理。
+- **直链：** 通过直链安装的 Beta 插件与主题。
+- **CSS 片段：** vault 里的片段，可分组、可批量切换。
+- **收藏：** 你自己的工具箱。支持分组。
 
 另有一个独立视图：**我的插件足迹**（命令「打开我的插件足迹」）。
 
@@ -186,7 +186,7 @@ Chinese Market 把三堵墙逐一打通。
 
 ### 3.1 三种搜索
 
-**关键词模式。** 负责你已经知道要找什么的时刻。
+**关键词模式：** 负责你已经知道要找什么的时刻。
 
 - 搜中文译名、英文原名、作者名。
 - 空格 = AND。
@@ -201,7 +201,7 @@ Chinese Market 把三堵墙逐一打通。
 - `author:zsviczian` —— 只看某个作者。
 - `name:dataview` —— 按原名精确查找。
 
-**本地语义模式。** 负责你只知道想要什么效果的时刻。
+**本地语义模式：** 负责你只知道想要什么效果的时刻。
 
 - 用一句话描述需求。
 - 向量召回跑在你自己的机器上。
@@ -209,7 +209,7 @@ Chinese Market 把三堵墙逐一打通。
 - 首次使用下载一次模型（默认 `Xenova/multilingual-e5-small`，量化后约 118MB）。
 - 之后彻底离线可用。
 
-**AI 语义模式。** 负责需求复杂、需要模型替你判断的时刻。
+**AI 语义模式：** 负责需求复杂、需要模型替你判断的时刻。
 
 - 用自然语言描述。
 - 大模型召回并精排。
@@ -276,9 +276,9 @@ Chinese Market 把三堵墙逐一打通。
 
 它带来三件事：
 
-- **可改。** 你改过的译法立即生效，并优先于后续任何在线结果。
-- **可管。** 译文能进 Git，能回溯、能同步、能分享。
-- **可带走。** 译文属于你，不锁在任何云端服务里。
+- **可改：** 你改过的译法立即生效，并优先于后续任何在线结果。
+- **可管：** 译文能进 Git，能回溯、能同步、能分享。
+- **可带走：** 译文属于你，不锁在任何云端服务里。
 
 翻译不是一次性消费品。
 
@@ -296,9 +296,9 @@ Chinese Market 把三堵墙逐一打通。
 
 两条通道，缺一不可：
 
-- **组件通道。** 钩住 Obsidian 原生 `Setting`、`ButtonComponent`、`DropdownComponent`、`TextComponent` 的原型方法。
+- **组件通道：** 钩住 Obsidian 原生 `Setting`、`ButtonComponent`、`DropdownComponent`、`TextComponent` 的原型方法。
 - 覆盖用 `new Setting()` 搭出来的传统设置页。
-- **DOM 通道。** 直接扫描设置面板里的英文文本节点。
+- **DOM 通道：** 直接扫描设置面板里的英文文本节点。
 - 覆盖 React / Vue 自绘的设置页。
 - 比如 Copilot 这类全程 `render(<SettingsMainV2 />)` 的插件。
 - 它一个原生组件都不碰，组件通道一个字符串都拦不到。
@@ -367,15 +367,15 @@ Chinese Market 把三堵墙逐一打通。
 
 ### 3.4 详情抽屉：从「敢装」到「装得明白」
 
-- **README 翻译。** 整篇译成中文。可切换通道。可随时返回原文。可一键复制。
-- **macOS 系统翻译。** 桌面端专用。处理长文。
-- **了解功能。** 让 AI 用几句话讲清这个插件的价值。
-- **相似推荐。** 基于分类与功能标签给出同类选项。
-- **版本选择。** 查看历史版本，并**固定安装某个版本**。新版本不兼容时，这是退路。
-- **依赖图谱。** 列出必需与可选依赖及其状态：已装、缺失、未启用、版本过低。可一键补齐。还会告诉你「谁依赖了它」。
-- **我的评测。** 记录安装次数、卸载时间、评分、弃用原因。沉淀进前面的台账。
+- **README 翻译：** 整篇译成中文。可切换通道。可随时返回原文。可一键复制。
+- **macOS 系统翻译：** 桌面端专用。处理长文。
+- **了解功能：** 让 AI 用几句话讲清这个插件的价值。
+- **相似推荐：** 基于分类与功能标签给出同类选项。
+- **版本选择：** 查看历史版本，并**固定到某个版本**。新版本不兼容时，这是退路。
+- **依赖图谱：** 列出必需与可选依赖及其状态（已装、缺失、未启用、版本过低）。可一键补齐。还会告诉你「谁依赖了它」。
+- **我的评测：** 记录安装次数、卸载时间、评分、弃用原因。沉淀进前面的台账。
 
-英文 README、隐藏的依赖、版本风险——这些「只有读懂英文才拿得到的信息」，在这里全部补齐。
+英文 README 译成中文、隐藏的依赖与版本风险一并标出——这些原本只有读懂英文才拿得到的信息，在这里全部补齐。
 
 决策不再依赖别人替你试错。
 
@@ -388,7 +388,7 @@ Chinese Market 把三堵墙逐一打通。
 - 收藏。
 - 官方推荐。
 - 中文生态。
-- 系列：竹林中国系列 / 羽鳞精选。
+- 系列标签：竹林中国系列、羽鳞精选。
 - 装过。
 - 弃用。
 - 踩坑原因。
@@ -402,14 +402,14 @@ Chinese Market 把三堵墙逐一打通。
 
 排序有八种口径：
 
-- **相关度。** 搜索之后看它。
-- **下载量。** 想稳妥就按它。
-- **最近更新。** 想找活跃维护的。
-- **名称。** 你知道名字但需要排序时。
-- **最新上架。** 想看新出现的工具。
-- **热度。** 综合未装优先、下载与更新。
-- **趋势。** 想发现正在被更多人装的东西。
-- **推荐。** 想看别人替你筛过的。
+- **相关度：** 搜索之后看它。
+- **下载量：** 想稳妥就按它。
+- **最近更新：** 想找活跃维护的。
+- **名称：** 你知道名字但需要排序时。
+- **最新上架：** 想看新出现的工具。
+- **热度：** 综合未装优先、下载与更新。
+- **趋势：** 想发现正在被更多人装的东西。
+- **推荐：** 想看别人替你筛过的。
 
 ### 3.6 装得上，还要装得稳
 
@@ -417,7 +417,7 @@ Chinese Market 把三堵墙逐一打通。
 - 并正确维护 Obsidian 的配置。
 - Beta 插件与主题可以走**直链安装**。
 - 详情页能**固定版本**。
-- 新版本打断工作流时，这是你的退路。
+- 新版本打断工作流时，这是你的回退点。
 - **更新页签**集中展示可用更新。
 - 支持全部更新与更新选中两种批量方式。
 - **健康度徽标**按最后发布时长判断：活跃 / 老化 / 风险。
@@ -448,10 +448,10 @@ Chinese Market 把三堵墙逐一打通。
 
 推荐体系有四个来源：
 
-- **羽鳞精选。** 人工策划清单。排序中置顶。
-- **竹林中国系列。** 面向中文用户场景。可单独筛选。
-- **官方推荐。** 策划推荐清单。
-- **中文生态。** 人工清单 + 算法判定。
+- **羽鳞精选：** 人工策划清单。排序中置顶。
+- **竹林中国系列：** 面向中文用户场景。可单独筛选。
+- **官方推荐：** 策划推荐清单。
+- **中文生态：** 人工清单 + 算法判定。
 
 还有一条独立信号：**趋势**。基于采样数据计算近期安装热度。
 
@@ -465,7 +465,7 @@ Chinese Market 把三堵墙逐一打通。
 
 ### 3.9 组合与批量管理
 
-**组合（Profile）。**
+**组合（Profile）：**
 
 - 把当前启用的一组插件存成组合。
 - 可一键应用。
@@ -474,7 +474,7 @@ Chinese Market 把三堵墙逐一打通。
 - 在快捷键设置里绑个键。
 - 「写作模式」「研究模式」「整理模式」瞬间切换。
 
-**已装插件管理。**
+**已装插件管理：**
 
 - 给 Obsidian 原生的「社区插件」设置页做增强。
 - 分组、备注、筛选。
@@ -510,17 +510,17 @@ Chinese Market 把三堵墙逐一打通。
 
 ### 3.11 设置项地图
 
-- **偏好。** 数据源筛选、默认排序、名称显示方式（译名优先 / 原名优先）。
-- **更新管理。** 新上线与近期更新窗口、健康度徽标与阈值、风险降级、趋势采样与保留天数、安装后的更新提醒。
-- **数据源。** 镜像源：GitHub / jsDelivr / 自定义。网络不通时换一条路，而不是被挡在门外。
-- **翻译引擎。** 各免费通道开关。百度、腾讯云、自托管、AI 的配置。
-- **AI 语义搜索。** 开关、BaseURL / Key / Model、是否展示推理过程。
-- **本地向量。** 模型选择、HF 镜像、WebGPU 状态、索引管理。
-- **缓存与质量。** 清除译名缓存、清除 AI 词典。
-- **翻译记忆库。** 路径、迁移、打开文件夹、清除已采纳、评测笔记路径。
-- **设置页翻译。** 开关、通道、黑名单。
-- **组合。** 保存、应用、绑定布局、删除。
-- **已装插件管理。** 增强开关、插件分组、CSS 片段分组。
+- **偏好：** 数据源筛选、默认排序、名称显示方式（译名优先 / 原名优先）。
+- **更新管理：** 新上线与近期更新窗口、健康度徽标与阈值、风险降级、趋势采样与保留天数、安装后的更新提醒。
+- **数据源：** 镜像源可选 GitHub、jsDelivr 或自定义。网络不通时换一条路，而不是被挡在门外。
+- **翻译引擎：** 各免费通道开关。百度、腾讯云、自托管、AI 的配置。
+- **AI 语义搜索：** 开关、BaseURL / Key / Model、是否展示推理过程。
+- **本地向量：** 模型选择、HF 镜像、WebGPU 状态、索引管理。
+- **缓存与质量：** 清除译名缓存、清除 AI 词典。
+- **翻译记忆库：** 路径、迁移、打开文件夹、清除已采纳、评测笔记路径。
+- **设置页翻译：** 开关、通道、黑名单。
+- **组合：** 保存、应用、绑定布局、删除。
+- **已装插件管理：** 增强开关、插件分组、CSS 片段分组。
 
 ---
 
@@ -638,12 +638,12 @@ import 统一走 `@layer/*` 别名。禁止跨层相对路径。详见 [docs/ARC
 
 ### 关键工程机制
 
-- **虚拟滚动。** 定高行 + 上下占位。DOM 节点数稳定在数百以内。搜索输入有防抖。
-- **向量存储。** sql.js（WASM）承载 SQLite。向量以量化形式存放。变更累积后批量落盘。因为写入低频、读取频繁。
-- **模型推理。** 跑在独立 worker bundle 里（transformers.js）。模型按需下载。跨域请求由主线程代发。
-- **响应式。** 一律用容器查询（`@container`），不用视口宽度。所以分屏、侧栏里也判断正确。
-- **无障碍。** 卡片、工具栏、抽屉大量使用 `aria-*`、`role`、`tabindex`。
-- **降级链。** 贯穿始终。
+- **虚拟滚动：** 定高行 + 上下占位。DOM 节点数稳定在数百以内。搜索输入有防抖。
+- **向量存储：** sql.js（WASM）承载 SQLite。向量以量化形式存放。变更累积后批量落盘。因为写入少、读取频繁。
+- **模型推理：** 跑在独立 worker bundle 里（transformers.js）。模型按需下载。跨域请求由主线程代发。
+- **响应式：** 一律用容器查询（`@container`），不用视口宽度。所以分屏、侧栏里也判断正确。
+- **无障碍：** 卡片、工具栏、抽屉大量使用 `aria-*`、`role`、`tabindex`。
+- **降级链：** 贯穿始终。
 
 降级链具体是：
 
@@ -677,7 +677,7 @@ npm run sync      # 构建并同步到本机 vault
 
 ### 文档地图
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。分层架构、依赖方向、命名约定。**动手前务必读一遍。**
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：分层架构、依赖方向、命名约定。**动手前务必读一遍。**
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。开发环境与命令。附提交前自检清单。
 - [docs/PERF-ISSUES.md](docs/PERF-ISSUES.md)。性能问题与优化轨迹。
 - [docs/SELF-AUDIT.md](docs/SELF-AUDIT.md)。提官方市场 PR 前的自检清单。
@@ -697,7 +697,6 @@ npm run sync      # 构建并同步到本机 vault
 
 - Bug 与功能建议，走 [Issues](https://github.com/miaoziguan/obsidian-chinese-plugin-market/issues)。
 - 带上复现步骤与环境信息。
-- 使用问题与开放讨论，到 [Discussions](https://github.com/miaoziguan/obsidian-chinese-plugin-market/discussions)。
 
 ### 贡献代码
 
@@ -725,7 +724,7 @@ npm run sync      # 构建并同步到本机 vault
 **第一种，改你自己的翻译记忆。**
 
 - 译文就在 vault 的 `tm/` 目录里。
-- 路径可在设置改。
+- 路径可在设置里改。
 - 是带 frontmatter 的 Markdown。
 - 直接编辑即可生效。
 - 改完立即优先于任何在线结果。
@@ -772,6 +771,23 @@ You can **search in Chinese, read in Chinese, and decide with confidence**.
 Its goal is not to make everyone speak one language.
 
 Its goal is to **rebuild the tower** — so that people using different languages can reach the same tools.
+
+### What Chinese Market does
+
+- **Five tabs, one local ledger.** Search, Translate, Card, Detail, and Manage. Every piece of plugin information is normalized into a single ledger that lives in your vault — you own it, and it stays searchable offline.
+- **Search the way that fits.** Keyword search with an advanced query syntax; on-device semantic search that runs fully offline with no API key; and an optional AI semantic search when you opt in.
+- **Translation is the foundation.** Free, zero-config channels are used by default, with automatic fallback between them and an offline seed dictionary. Your translation memory is stored as plain, editable Markdown inside your vault.
+- **Card view.** One card shows everything that matters about a plugin — name, description, rating, maintenance health, and whether it is safe to install.
+- **Detail drawer.** Move from "dare to install" to "install with clarity": a translated README, an AI summary, similar plugins, a dependency graph, and one-click version pinning.
+- **Filter and sort.** Filter by category, language, and update status; sort by relevance, popularity, or last updated. The initiative goes back to you.
+- **Install stable, not just installable.** Dependency resolution and version-risk detection surface problems before they break your setup; version pinning is your safety net when a new release is incompatible.
+- **Compare mode.** Put candidate plugins side by side and export the comparison, turning hesitation into a decision.
+- **Favorites, history, and recommendations.** What is worth recommending is decided by you, not an opaque algorithm, and your footprint stays local.
+- **Combo and batch management.** Install, enable, update, or remove a group of plugins together instead of one by one.
+- **Commands and entry points.** Every feature is reachable from the command palette, so power users never leave the keyboard.
+- **Settings map.** All options are laid out in one place; local-first is the default posture.
+- **Privacy by default.** Local-first wherever possible; only the minimal parts ever touch the network; API keys are off by default and stored separately; your translations belong to you and are never uploaded.
+- **Architecture.** A seven-layer one-way dependency design. Vector storage runs on sql.js (WASM) SQLite with quantized embeddings; changes batch to disk after they accumulate, because writes are rare and reads are frequent. Fully offline-capable.
 
 Highlights:
 
