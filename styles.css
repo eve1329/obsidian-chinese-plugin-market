@@ -1,5 +1,4 @@
-/* ============================================================
-   中文区插件市场 — 视图样式 (v5 · 设计升级)
+/* =====================================================   中文区插件市场 — 视图样式 (v5 · 设计升级)
    设计基调：Obsidian 原生质感 + 精致层次。
    约束：借用宿主 CSS 变量，自动适配明/暗主题，不引入外部字体与色板。
    视觉策略：清晰的信息层级 + 克制的材质对比 + 有意义的微交互。
@@ -3550,8 +3549,7 @@ button.pt-card-install-btn--installed {
 
 /* ── 键盘可达性：搜索框（含模式段）、排序下拉、筛选胶囊的焦点态已在各自定义处单独处理 ── */
 
-/* ============================================================
-   详情 Drawer（内联抽屉面板，替代 Modal）
+/* =====================================================   详情 Drawer（内联抽屉面板，替代 Modal）
    ============================================================ */
 
 /* 遮罩层 */
@@ -3884,8 +3882,7 @@ button.pt-card-install-btn--installed {
 	box-shadow: var(--pt-focus-ring);
 }
 
-/* ============================================================
-   插件详情抽屉（Modal，产品改进 #8）
+/* =====================================================   插件详情抽屉（Modal，产品改进 #8）
    ============================================================ */
 .pt-detail-modal {
 	max-height: 70vh;
@@ -4263,8 +4260,7 @@ button.pt-card-install-btn--installed {
 	border-color: var(--pt-border-strong, var(--background-modifier-border-hover));
 }
 
-/* ============================================================
-   设置界面简单/高级分屏（产品改进 #11）
+/* =====================================================   设置界面简单/高级分屏（产品改进 #11）
    ============================================================ */
 .pt-advanced-settings {
 	margin: var(--pt-space-md) 0;
@@ -4661,8 +4657,7 @@ button.pt-card-install-btn--installed {
 	color: var(--pt-text-muted, var(--text-muted));
 }
 
-/* ============================================================
-   卡片编辑器「标记有误」（产品改进 #2）
+/* =====================================================   卡片编辑器「标记有误」（产品改进 #2）
    ============================================================ */
 .pt-card-editor-flag {
 	color: var(--pt-text-muted);
@@ -4685,8 +4680,7 @@ button.pt-card-install-btn--installed {
 	color: var(--pt-text);
 }
 
-/* ============================================================
-   UX 增强：回到顶部浮动按钮 + 空状态清除按钮
+/* =====================================================   UX 增强：回到顶部浮动按钮 + 空状态清除按钮
    ============================================================ */
 
 /* 回到顶部：固定右下角，滚动超过 1.5 屏时显现 */
@@ -4784,8 +4778,7 @@ button.pt-card-install-btn--installed {
 	margin-top: var(--pt-space-md);
 }
 
-/* ============================================================
-   选品对比（产品改进：插件对比）
+/* =====================================================   选品对比（产品改进：插件对比）
    Modal 挂在 body 下，不继承 .pt-view 变量，故统一使用 Obsidian 原生变量。
    ============================================================ */
 
@@ -7672,3 +7665,50 @@ button.pt-card-install-btn--installed {
    - safe-area → .pt-view / .pt-drawer 基础块（env 在非移动端回退 0px，全设备安全）
    用 .pt-mobile（单一 JS 钩子）而非 @media(hover:none) / .is-mobile，避免两套尺寸规则
    互相打架、出现「部分按钮放大部分不放大」的不一致。 */
+/* ── 搜索诊断（设置页）：展示最近一次搜索的分段计时 ──
+   与 pt-setting-full-width / pt-setting-control-full 配合使用。
+   进度条走原生 <progress>，避免动态宽度需要内联样式。 */
+.pt-timing-box {
+	width: 100%;
+	text-align: left;
+}
+.pt-timing-total {
+	font-weight: 600;
+}
+.pt-timing-sub,
+.pt-timing-counters,
+.pt-timing-empty {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+.pt-timing-hint {
+	margin-top: 8px;
+	color: var(--text-faint);
+	font-size: var(--font-ui-smaller);
+}
+.pt-timing-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 4px;
+}
+.pt-timing-name {
+	flex: 0 0 8em;
+	font-size: var(--font-ui-smaller);
+}
+.pt-timing-ms {
+	flex: 0 0 5em;
+	font-size: var(--font-ui-smaller);
+	text-align: right;
+	color: var(--text-muted);
+}
+.pt-timing-row progress {
+	flex: 1 1 auto;
+	height: 6px;
+}
+.pt-timing-bar-llm {
+	opacity: 0.5;
+}
+.pt-timing-counters {
+	margin-top: 8px;
+}

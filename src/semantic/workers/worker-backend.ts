@@ -165,16 +165,17 @@ export class WorkerLocalBackend implements LocalModelBackend {
 	private async init(): Promise<void> {
 		if (this.initPromise) return this.initPromise;
 		if (this.worker) return;
-		this.initPromise = new Promise<void>((resolve, reject) => {
+		const initPromise = new Promise<void>((resolve, reject) => {
 			this.initResolve = resolve;
 			this.initReject = reject;
 		});
+		this.initPromise = initPromise;
 		try {
 			await this.bootWorker();
 		} catch (e: unknown) {
 			this.failInit(e instanceof Error ? e : new Error(String(e)));
 		}
-		return this.initPromise;
+		return initPromise;
 	}
 
 	private async bootWorker(): Promise<void> {
