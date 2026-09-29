@@ -22,6 +22,55 @@ import { assessHealth } from "@domain/recommend/health";
 import { isNewPlugin } from "@domain/recommend/newness";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 
+/** 羽鳞精选标准自绘浮层：悬停/聚焦即时显示，统一 Obsidian 风格，避免原生 title 延迟 */
+let yulinTipEl: HTMLElement | null = null;
+let yulinTipPinned = false;
+function hideYulinTip(): void {
+	if (yulinTipEl) {
+		yulinTipEl.remove();
+		yulinTipEl = null;
+	}
+}
+function showYulinTip(anchor: HTMLElement, text: string): void {
+	hideYulinTip();
+	const tip = document.createElement("div");
+	tip.setCssStyles({
+		position: "fixed",
+		zIndex: "1000",
+		background: "var(--background-secondary, #2b2b2b)",
+		color: "var(--text-normal, #e0e0e0)",
+		border: "1px solid var(--background-modifier-border, #444)",
+		borderRadius: "8px",
+		padding: "8px 10px",
+		fontSize: "12px",
+		lineHeight: "1.55",
+		boxShadow: "0 6px 18px rgba(0,0,0,0.4)",
+		maxWidth: "300px",
+		pointerEvents: "none",
+	});
+	text.split("\n").forEach((line, i) => {
+		const d = document.createElement("div");
+		if (i === 0) {
+			d.style.fontWeight = "600";
+			d.style.color = "var(--interactive-accent, #e8862e)";
+			d.style.marginBottom = "4px";
+		}
+		d.textContent = line;
+		tip.appendChild(d);
+	});
+	document.body.appendChild(tip);
+	yulinTipEl = tip;
+	const r = anchor.getBoundingClientRect();
+	const tw = tip.offsetWidth;
+	const th = tip.offsetHeight;
+	let top = r.top - th - 8;
+	if (top < 8) top = r.bottom + 8;
+	let left = r.left;
+	if (left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8;
+	tip.style.top = `${Math.max(8, top)}px`;
+	tip.style.left = `${Math.max(8, left)}px`;
+}
+
 /** 离线信号 → 中文标签（无需 AI Key 即可展示） */
 const SIGNAL_LABELS: Record<SignalId, string> = {
 	top1: "Top 1%",
@@ -312,22 +361,25 @@ export function createCardElement(ctx: CardRenderContext): HTMLElement {
 	const metaInfo = meta.createDiv({ cls: "pt-card-meta-info" });
 
 	// 羽鳞精选徽标：放在底部元信息行最前，不压安装按钮，也不占标题行空间
+	// 悬停/聚焦即时显示自绘浮层；点击就地复用同一浮层（切换固定/隐藏）
 	const yulinBadge = metaInfo.createSpan({ cls: "pt-card-yulin-badge" });
 	yulinBadge.textContent = ctx.t("yulin.badge");
 	const yulinCriteria = ctx.t("yulin.badge.criteria");
-	yulinBadge.setAttribute("title", yulinCriteria);
 	yulinBadge.setCssStyles({ display: "none", cursor: "pointer" });
+	yulinBadge.addEventListener("mouseenter", () => showYulinTip(yulinBadge, yulinCriteria));
+	yulinBadge.addEventListener("mouseleave", () => { if (!yulinTipPinned) hideYulinTip(); });
+	yulinBadge.addEventListener("focus", () => showYulinTip(yulinBadge, yulinCriteria));
+	yulinBadge.addEventListener("blur", () => { if (!yulinTipPinned) hideYulinTip(); });
 	yulinBadge.addEventListener("click", (ev) => {
 		ev.preventDefault();
 		ev.stopPropagation();
-		const frag = document.createDocumentFragment();
-		yulinCriteria.split("\n").forEach((line, i) => {
-			const lineEl = document.createElement("div");
-			lineEl.className = i === 0 ? "pt-yulin-criteria-title" : "pt-yulin-criteria-line";
-			lineEl.textContent = line;
-			frag.appendChild(lineEl);
-		});
-		new Notice(frag, 12000);
+		if (yulinTipPinned) {
+			yulinTipPinned = false;
+			hideYulinTip();
+		} else {
+			yulinTipPinned = true;
+			showYulinTip(yulinBadge, yulinCriteria);
+		}
 	});
 
 	const authorSpan = metaInfo.createSpan({
