@@ -1089,7 +1089,7 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 		});
 	};
 	UPD_OPTIONS.forEach((o, i) => {
-		if (i === POSITIVE_COUNT) updChip.createEl("span", { cls: "pt-facet-sep", text: "·" });
+		if (i === POSITIVE_COUNT) updChip.createSpan({ cls: "pt-facet-sep", text: "·" });
 		const btn = updChip.createEl("button", { cls: "pt-filter", text: o.label });
 		updToggles.push(btn);
 		btn.addEventListener("click", () => {
@@ -1160,8 +1160,10 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 			state.advancedAnimTimer = window.setTimeout(() => {
 				state.suppressResizeMeasure = false;
 				advanced.classList.remove("pt-animating");
+				// 同 ResizeObserver：先无条件重测列数/行高，再走 updateWindow 重建可见窗口，
+				// 否则展开/收起改变了列表区高度后，新露出的行拿不到卡片（尾部留白）。
 				ctx.measureLayout();
-				ctx.fillVisibleWindow();
+				ctx.updateWindow();
 				// 展开后强制重新对齐标签列（面板折叠时 offsetWidth 可能为 0，展开后才有真实宽度）
 				if (open) window.requestAnimationFrame(() => alignFacetLabels(ctx.contentEl));
 			}, 200); // 略大于 --pt-duration-normal(180ms)，确保动画收尾后再测

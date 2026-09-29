@@ -265,6 +265,35 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 export const DEFAULT_LOCAL_MODEL = "Xenova/multilingual-e5-small";
 
 /**
+ * 向量索引的「身份 key」。
+ *
+ * 两条互相独立的路径必须算出同一个 key：`AISearcher.vectorRecallScores`（搜索时判定
+ * needBuild）与 `plugin.buildLocalIndex`（后台/手动构建）。只要有一侧不一致，
+ * 就会出现「构建写 A key、搜索期待 B key → 每次搜索都全量重建」的反复重建灾难。
+ *
+ * 为什么不能只用「模型名」：同名模型在不同服务商（或不同自建网关）之间并不共享向量空间，
+ * 只比模型名会让「换了 baseURL 但模型名没变」的用户沿用旧空间的索引，余弦打分全是假的。
+ *
+ * 安全约束：apiKey 绝不进入该 key（key 会写进 SQLite meta 并出现在日志里）。
+ */
+export function embeddingIndexKey(cfg: {
+	source?: string;
+	baseURL?: string;
+	model?: string;
+	localModel?: string;
+}): string {
+	if (cfg.source === "local") {
+		const m = cfg.localModel ?? "";
+		return m ? `local|${m}` : "local";
+	}
+	const m = cfg.model ?? "";
+	const base = (cfg.baseURL ?? "").trim().replace(/\/+$/, "");
+	// 未自定义 baseURL（走 provider 默认地址）时保持纯模型名，与历史索引 key 完全一致，
+	// 避免升级后无谓的一次全量重建。
+	return base ? `api@${base}|${m}` : m;
+}
+
+/**
  * 是否为 e5 系列模型（multilingual-e5-small/base/large 等，含 Xenova/intfloat/
  * onnx-community 各种 repo 前缀）。e5 在对比学习训练时对查询/文档分别注入
  * "query: " / "passage: " 指令前缀，推理不带前缀会显著劣化（官方 README 要求）。

@@ -585,16 +585,20 @@ export function parseRecallCandidates(
 	const obj = parsed as Record<string, unknown>;
 
 	const candidates: string[] = [];
+	// 注意：只有「至少收进了一个候选」才算命中该字段。
+	// 反例：`{"indices":[],"ids":["obsidian-git"]}` —— 若空数组也算命中，
+	// 标准路径会被空的 indices 占住，真实候选所在的 ids 根本不会被读取，
+	// 最终以「召回响应缺少可识别的候选字段」抛错，整批 LLM 兜底召回白做。
 	const pushIfStringArray = (v: unknown) => {
-		if (Array.isArray(v)) {
-			for (const x of v) {
-				if (typeof x === "string" || typeof x === "number") {
-					candidates.push(String(x));
-				}
+		if (!Array.isArray(v)) return false;
+		let hit = false;
+		for (const x of v) {
+			if (typeof x === "string" || typeof x === "number") {
+				candidates.push(String(x));
+				hit = true;
 			}
-			return true;
 		}
-		return false;
+		return hit;
 	};
 
 	if (pushIfStringArray(obj.indices)) {

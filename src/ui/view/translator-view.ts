@@ -788,6 +788,11 @@ export class ChinesePluginMarketView extends ItemView {
 			},
 		};
 		await this.loadAndRender();
+		// 竞态守卫：loadAndRender 期间（网络拉取 + 翻译回灌）用户可能已关闭本视图，
+		// 此时 onClose 已跑完并置 disposed=true。若不在这里复查就直接装 Device Watcher，
+		// 后续再无任何清理入口（onClose 不会再执行第二次）→ fs.watch / 60s 轮询 /
+		// 6h 更新定时器连同本视图闭包永久驻留。
+		if (this.disposed) return;
 		// #14：启动已安装状态实时同步（桌面 fs.watch / 移动轮询），视图关闭时释放
 		this.installedWatchDispose = startInstalledWatch(this._ctx);
 		// A 方案：后台检测「可更新」插件（拉官方 manifest 对比本地版本），完成后自动重渲徽标 + ribbon 红点

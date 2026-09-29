@@ -621,6 +621,12 @@ export function filterAndSortPlugins(params: FilterParams): FilterResult {
 	nextFilterNewWithinDays = newWithinDays ?? null;
 	nextFilterUpdatedWithinDays = updatedWithinDays ?? null;
 	nextFilterCategories = selectedCategories;
+	// 评测台账三维度必须回写：否则上层缓存恒为 "all"，从「装过/弃用/踩坑」切回「全部」时
+	// canReuse 判定成立，会在上一次【已收窄的子集】上继续前缀过滤 → 「全部」列表永久缺失
+	// 未选中的插件（前缀复用只减不增，错误结果会一直累积到下一次全量重算）。
+	nextFilterTried = triedFilter ?? "all";
+	nextFilterAbandoned = abandonedFilter ?? "all";
+	nextFilterVerdict = verdictFilter ?? "all";
 
 	// 应用排序。relevance 保持来源顺序（AI=rankedIds 序 / 本地=过滤序）；其余维度覆盖之。
 	// displayName 取译名（中文名优先）用于名称排序——通过 displayNameOf 回调就地计算，

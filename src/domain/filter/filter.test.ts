@@ -522,6 +522,39 @@ describe("filterAndSortPlugins", () => {
 		expect(r2.list.map((p) => p.id)).toEqual([P_MIND.id]);
 	});
 
+	it("回归：评测台账三维度必须回写，否则切回「全部」会复用已收窄子集", () => {
+		// 第一步：triedFilter='tried' → 仅剩 P_GIT，且 nextFilterTried 必须回写 'tried'
+		const triedSet = new Set([P_GIT.id]);
+		const r1 = filterAndSortPlugins(
+			baseFilterParams({ triedFilter: "tried", journalTriedIds: triedSet })
+		);
+		expect(r1.list.map((p) => p.id)).toEqual([P_GIT.id]);
+		expect(r1.nextFilterTried).toBe("tried");
+
+		// 第二步：切回「全部」（缓存回写值参与 canReuse 判定）。
+		// 若 nextFilterTried 恒为 undefined→缓存恒 'all'，此处 canReuse 会误成立，
+		// 在 [P_GIT] 子集上继续过滤 → 「全部」只剩 1 个插件（缺 P_MIND / P_CAL）。
+		const r2 = filterAndSortPlugins(
+			baseFilterParams({
+				triedFilter: "all",
+				journalTriedIds: triedSet,
+				lastFiltered: r1.nextFiltered,
+				lastFilterQuery: r1.nextFilterQuery,
+				lastFilterSource: r1.nextFilterSource as SourceFilter,
+				lastFilterAuthor: r1.nextFilterAuthor,
+				lastFilterInstall: r1.nextFilterInstall,
+				lastFilterRecommendedOnly: r1.nextFilterRecommendedOnly,
+				lastFilterCategories: r1.nextFilterCategories,
+				lastFilterMode: r1.nextFilterMode,
+				lastFilterTried: r1.nextFilterTried,
+				lastFilterAbandoned: r1.nextFilterAbandoned,
+				lastFilterVerdict: r1.nextFilterVerdict,
+			})
+		);
+		expect(r2.list.map((p) => p.id)).toEqual([P_MIND.id, P_CAL.id, P_GIT.id]);
+		expect(r2.nextFilterTried).toBe("all");
+	});
+
 	it("非 AI 路径清空残留 AI 结果（clearAiResult=true）", () => {
 		const ai: AISearchResult = { rankedIds: [P_GIT.id] };
 		const r = filterAndSortPlugins(

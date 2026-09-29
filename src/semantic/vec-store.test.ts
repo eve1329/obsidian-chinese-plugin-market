@@ -136,4 +136,51 @@ describe("SqliteVectorStore", () => {
 		expect(s2.getAllVecs().has("b")).toBe(false); // 删除已持久化
 		await s2.dispose();
 	});
+
+	it("dispose 会冲刷未达阈值的变更（不能依赖外部先调 flush）", async () => {
+		const { adapter } = mkAdapter();
+		const s = await SqliteVectorStore.open(adapter, file, SQL as any);
+		s.replaceAll([{ id: "pending", vec: [0.3, 0.7] }]); // 仅 1 次变更，远小于 100 阈值
+		s.setMeta("model", "dispose-flush");
+		// 关键：不显式 flush，直接 dispose —— 旧实现先置 disposed 再 flush 会被自身短路
+		await s.dispose();
+
+		const s2 = await SqliteVectorStore.open(adapter, file, SQL as any);
+		expect(s2.count()).toBe(1);
+		expect(s2.getMeta("model")).toBe("dispose-flush");
+		await s2.dispose();
+	});
+
+	it("写盘 await 窗口内到达的变更不会被 mutationCount 清零吞掉", async () => {
+		const { adapter: base } = mkAdapter();
+		// 可控的写盘：第一次 write 挂起，等我们在 await 窗口里制造新变更后再放行
+		let release: (() => void) | null = null;
+		const gate = new Promise<void>((r) => { release = r; });
+		let calls = 0;
+		const adapter: PersistAdapter = {
+			exists: base.exists,
+			read: base.read,
+			write: async (p, b) => {
+				calls++;
+				if (calls === 1) await gate;
+				await base.write(p, b);
+			},
+		};
+
+		const s = await SqliteVectorStore.open(adapter, file, SQL as any);
+		s.replaceAll([{ id: "w1", vec: [1, 0] }]);
+		const first = s.flush(); // 进入 export→await write 窗口
+		// 窗口内的新变更：旧实现在写盘结束后把 mutationCount 归零，使其再无写盘触发器
+		s.setMeta("late", "1");
+		s.upsertMany([{ id: "w1", vec: [0, 1] }]);
+		release!();
+		await first;
+		await s.dispose();
+
+		expect(calls).toBeGreaterThanOrEqual(2); // 窗口内变更触发了补写
+		const s2 = await SqliteVectorStore.open(adapter, file, SQL as any);
+		expect(s2.getMeta("late")).toBe("1");
+		expect(s2.getAllVecs().get("w1")![1]).toBeCloseTo(1);
+		await s2.dispose();
+	});
 });

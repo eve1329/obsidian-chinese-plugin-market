@@ -540,8 +540,13 @@ export async function loadAndRender(ctx: ViewContext) {
 			if (ctx.measureRAF) return;
 			ctx.measureRAF = window.requestAnimationFrame(() => {
 				ctx.measureRAF = 0;
+				// 1) 先无条件重测：宽度变化会改列数、行高也可能随 CSS 变量变化，
+				//    而 updateWindow 内部的 measureLayoutIfNeeded 在脏标记未置位时会跳过。
 				ctx.measureLayout();
-				ctx.fillVisibleWindow();
+				// 2) 再重建可见窗口：视口变高后 [start,end) 随之变大，仅靠 measureLayout +
+				//    fillVisibleWindow 只能给「已有卡片」填内容，不会为新露出的行补建卡片 →
+				//    列表尾部留白，须用户滚动一下才补齐。
+				ctx.updateWindow();
 			});
 		});
 		ctx.resizeObserver.observe(listContainer);

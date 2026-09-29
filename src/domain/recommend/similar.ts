@@ -206,24 +206,30 @@ function tokenize(text: string): string[] {
  * 避免「打开热门分类插件时对上千候选逐一 tokenize」的重复分词（数百 ms → 近即时）。
  * LRU 限容，防内存膨胀。
  */
-const CANDIDATE_TOKEN_CACHE = new Map<string, Set<string>>();
+const CANDIDATE_TOKEN_CACHE = new Map<string, { desc: string; tokens: Set<string> }>();
 const CANDIDATE_TOKEN_CACHE_MAX = 2048;
 
 function getCandidateTokenSet(id: string, desc: string): Set<string> {
 	const hit = CANDIDATE_TOKEN_CACHE.get(id);
 	if (hit) {
-		// LRU：命中移到末尾
+		// 描述变了必须重建：插件列表刷新后同一 id 的 desc 可能更新，
+		// 只按 id 命中会让相似推荐一直用旧分词参与 Jaccard 打分（列表更新后才刷新的
+		// desc 永远进不了评分，直到该条被 LRU 淘汰为止）。故用 desc 本身做失效指纹。
+		if (hit.desc === desc) {
+			// LRU：命中移到末尾
+			CANDIDATE_TOKEN_CACHE.delete(id);
+			CANDIDATE_TOKEN_CACHE.set(id, hit);
+			return hit.tokens;
+		}
 		CANDIDATE_TOKEN_CACHE.delete(id);
-		CANDIDATE_TOKEN_CACHE.set(id, hit);
-		return hit;
 	}
-	const set = new Set(tokenize(desc));
+	const tokens = new Set(tokenize(desc));
 	if (CANDIDATE_TOKEN_CACHE.size >= CANDIDATE_TOKEN_CACHE_MAX) {
 		const oldest = CANDIDATE_TOKEN_CACHE.keys().next().value;
 		if (oldest !== undefined) CANDIDATE_TOKEN_CACHE.delete(oldest);
 	}
-	CANDIDATE_TOKEN_CACHE.set(id, set);
-	return set;
+	CANDIDATE_TOKEN_CACHE.set(id, { desc, tokens });
+	return tokens;
 }
 
 /** 测试专用：清空候选 token 缓存（模块级缓存在测试间会泄漏状态）。 */

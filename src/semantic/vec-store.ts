@@ -241,7 +241,23 @@ export class SqliteVectorStore {
 	async flush(): Promise<void> {
 		if (this.disposed) return;
 		if (this.flushInFlight) return this.flushInFlight;
+		await this.flushNow();
+	}
+
+	/**
+	 * 真正执行一次导出写盘（private，不做 disposed 短路，供 dispose() 收尾调用）。
+	 *
+	 * 为什么不能直接在 dispose 里 await flush()：dispose 若先把 disposed 置 true，
+	 * flush 首行的 `if (this.disposed) return;` 会让它空转，本应冲刷的增量全部丢失。
+	 */
+	private async flushNow(): Promise<void> {
+		if (this.flushInFlight) return this.flushInFlight;
 		this.flushInFlight = (async () => {
+			// 记录本轮起点，用于「导出期间新到的变更」计数结转。
+			// 反例：直接 `this.mutationCount = 0` 会把 await adapter.write 期间发生的
+			// insert/update 计数一并抹掉 —— 这部分行不在本次导出的 bytes 里，却再也
+			// 没有任何写盘触发器（idleTimer 已清、未达阈值）→ 数据静默丢。
+			const mark = this.mutationCount;
 			try {
 				if (this.idleTimer) {
 					window.clearTimeout(this.idleTimer);
@@ -249,7 +265,7 @@ export class SqliteVectorStore {
 				}
 				const bytes = this.db.export();
 				await this.adapter.write(this.dbPath, bytes);
-				this.mutationCount = 0;
+				this.mutationCount = Math.max(0, this.mutationCount - mark);
 			} finally {
 				this.flushInFlight = null;
 			}
@@ -259,12 +275,21 @@ export class SqliteVectorStore {
 
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
+		// 顺序铁律：先冲刷未落盘的变更，再置 disposed。
+		// 反例：先置 disposed 会让 flush() 被自身的 `if (this.disposed) return` 短路 →
+		// 未达 100 次阈值（或尚未到 30s 空闲）的增量在插件卸载时被静默丢弃。
+		try {
+			if (this.mutationCount > 0) await this.flushNow();
+			// 写盘期间可能又累积了新变更（await 窗口）→ 再冲一轮，确保干净退出
+			if (this.mutationCount > 0) await this.flushNow();
+		} catch (e) {
+			logger.warn("[Chinese Plugin Market] 向量库关闭前冲刷失败：", e);
+		}
 		this.disposed = true;
 		if (this.idleTimer) {
 			window.clearTimeout(this.idleTimer);
 			this.idleTimer = null;
 		}
-		if (this.mutationCount > 0) await this.flush();
 		try {
 			this.db.close();
 		} catch {

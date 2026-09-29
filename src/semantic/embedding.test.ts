@@ -6,6 +6,7 @@ import {
 	DEFAULT_LOCAL_MODEL,
 	DEFAULT_REMOTE_HOST,
 	normalizeRemoteHost,
+	embeddingIndexKey,
 	__clearQueryVecCacheForTest,
 	type EmbeddingProvider,
 	type VectorIndex,
@@ -251,6 +252,49 @@ describe("LocalEmbeddingProvider（阶段 2.5）", () => {
 		// 显式官方源原样透传（海外/自托管逃生口）
 		const p3 = new LocalEmbeddingProvider(undefined, "Xenova/foo-rh3", undefined, "https://huggingface.co/");
 		expect((p3 as any).backend.cfg.remoteHost).toBe("https://huggingface.co/");
+	});
+});
+
+describe("embeddingIndexKey（索引身份：两处调用必须一致）", () => {
+	it("默认 API 配置保持纯模型名（与历史索引 key 兼容，不触发无谓重建）", () => {
+		expect(
+			embeddingIndexKey({ source: "api", model: "text-embedding-3-small" })
+		).toBe("text-embedding-3-small");
+		expect(
+			embeddingIndexKey({ source: "api", baseURL: "  ", model: "text-embedding-3-small" })
+		).toBe("text-embedding-3-small");
+	});
+
+	it("换服务商必须换 key（同名模型不同 vendor 不共享向量空间）", () => {
+		const a = embeddingIndexKey({
+			source: "api",
+			baseURL: "https://api.openai.com/v1",
+			model: "bge-m3",
+		});
+		const b = embeddingIndexKey({
+			source: "api",
+			baseURL: "https://api.openai.com/v1/", // 尾斜杠归一化后应视为同一个服务
+			model: "bge-m3",
+		});
+		const c = embeddingIndexKey({
+			source: "api",
+			baseURL: "https://my-gateway.example/v1",
+			model: "bge-m3",
+		});
+		expect(a).toBe(b);
+		expect(a).not.toBe(c);
+	});
+
+	it("本地与云端同名模型互不冒充", () => {
+		const local = embeddingIndexKey({ source: "local", localModel: "same-model" });
+		const cloud = embeddingIndexKey({ source: "api", model: "same-model" });
+		expect(local).not.toBe(cloud);
+	});
+
+	it("e5 指令前缀判定不受身份前缀影响", () => {
+		expect(embeddingIndexKey({ source: "local", localModel: DEFAULT_LOCAL_MODEL })).toContain(
+			DEFAULT_LOCAL_MODEL
+		);
 	});
 });
 

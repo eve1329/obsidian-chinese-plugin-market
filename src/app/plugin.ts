@@ -35,7 +35,7 @@ import { makeT, pickLang } from "@shared/i18n";
 import { setScrollDebug } from "@ui/view/view-render";
 import { TranslatorSettingTab } from "@app/settings-tab";
 import { debounce, mapWithConcurrency, contentHash, isAISearchUsable } from "@shared/utils";
-import { LocalEmbeddingProvider, buildVectorIndex, DEFAULT_LOCAL_MODEL, normalizeRemoteHost, type EmbeddingProvider, type IndexPlugin } from "@semantic/embedding";
+import { LocalEmbeddingProvider, buildVectorIndex, DEFAULT_LOCAL_MODEL, normalizeRemoteHost, embeddingIndexKey, type EmbeddingProvider, type IndexPlugin } from "@semantic/embedding";
 import { setWorkerSourceLoader, setModelProgressReporter, setWorkerFetchBridge, isWorkerFetchBridgeInstalled, reportModelProgress } from "@semantic/workers/worker-backend";
 import { ChinesePluginMarketView, ChinesePluginMarketSettings, DEFAULT_SETTINGS, getDefaultSettings, type PluginProfile } from "@ui/view/translator-view";
 import { refreshOutdated } from "@ui/view/view-data";
@@ -1923,7 +1923,19 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				requestRefresh();
 			},
 			async renameSnippet(oldBase, newBase) {
-				await renameSnippet(app, oldBase, newBase);
+				// 与 createSnippet 对齐：renameSnippet 内部虽已有兜底校验（抛错），
+				// 这里提前拦下并给用户可读提示，避免只剩控制台告警。
+				if (!isValidSnippetBaseName(newBase)) {
+					new Notice(pickLang("css.new.invalid"));
+					return;
+				}
+				try {
+					await renameSnippet(app, oldBase, newBase);
+				} catch (error) {
+					logger.warn("[Chinese Plugin Market] 重命名 CSS 片段失败：", error);
+					new Notice(pickLang("manage.file.rename.fail"));
+					return;
+				}
 				// 同步元数据 key（平台层不碰 manage.cssMeta）
 				const meta = settings.cssMeta;
 				if (meta[oldBase]) {
@@ -3105,7 +3117,12 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 		const total = plugins.length;
 		let doneCount = 0; // 真实已 embed 计数（增量构建时为增量条目数，分母对齐 total）
-		const model = this.settings.embeddingLocalModel || DEFAULT_LOCAL_MODEL;
+		// 注意区分两个“model”：
+		// - localModelName 传给 LocalEmbeddingProvider（真实模型名，必须原样）；
+		// - model 是索引身份 key，必须与搜索侧 AISearcher 的 embeddingIndexKey 结果一致，
+		//   否则搜索会判定 model 不匹配 → 每次都全量重建。
+		const localModelName = this.settings.embeddingLocalModel || DEFAULT_LOCAL_MODEL;
+		const model = embeddingIndexKey({ source: "local", localModel: localModelName });
 		const done = (s: "done" | "error", error?: string) => {
 			this.localIndexState = {
 				status: s,
@@ -3118,7 +3135,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 		const run = async (): Promise<void> => {
 		try {
-			const base = new LocalEmbeddingProvider(undefined, model, this.settings.embeddingLocalWasmPaths || undefined, this.settings.embeddingRemoteHost || undefined);
+			const base = new LocalEmbeddingProvider(undefined, localModelName, this.settings.embeddingLocalWasmPaths || undefined, this.settings.embeddingRemoteHost || undefined);
 			// 时间片渐进构建（对齐 vault-curate 的 buildBM25Sliced）：每批 embed 后
 			// yield 一次主线程，让 UI 能重绘并实时显示进度，避免一次性大任务冻结界面。
 			const BATCH = 32;

@@ -102,9 +102,9 @@ export interface AISearchCandidate {
 
 export interface AISearchResult {
 	rankedIds: string[];
-	mergedFromBatchRecall?: boolean;
-	batchRecallFailed?: boolean;
-	batchRecallAllFailed?: boolean;
+	// 注：原 mergedFromBatchRecall / batchRecallFailed / batchRecallAllFailed 三个字段
+	// 全仓库无任何写入点（recallAllBatches 在整批失败时直接 throw，见 ai.ts），
+	// 属「声明了但永远不会被赋值」的死字段，会让读者误以为存在降级分支，已删除。
 	/** LLM 精排失败、已降级到本地召回排序（向量∪关键词混合序）时为 true */
 	rankFallback?: boolean;
 	reasons?: Record<string, string>;

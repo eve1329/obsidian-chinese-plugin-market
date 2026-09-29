@@ -310,6 +310,19 @@ describe("parseRecallCandidates", () => {
 		expect(() => parseRecallCandidates({ foo: "bar" }, batch)).toThrow(/缺少可识别的候选字段/);
 	});
 
+	it("空的 indices 不应遮蔽同级的 ids（模型先吐空 indices 再给真实 ID）", () => {
+		const out = parseRecallCandidates({ indices: [], ids: ["dataview"] }, batch);
+		expect(out.map((c) => c.id)).toEqual(["dataview"]);
+	});
+
+	it("空的 ranking 不应遮蔽同级的 plugins（嵌套兜底仍可达）", () => {
+		const out = parseRecallCandidates(
+			{ ranking: [], plugins: [{ id: "excalidraw" }] },
+			batch
+		);
+		expect(out.map((c) => c.id)).toEqual(["excalidraw"]);
+	});
+
 	it("非对象输入抛错", () => {
 		expect(() => parseRecallCandidates("string", batch)).toThrow();
 		expect(() => parseRecallCandidates(null, batch)).toThrow();

@@ -311,7 +311,13 @@ export async function ensureDataLoaded(ctx: ViewContext) : Promise<boolean> {
 				updateTMProgressHint(ctx, progressHint);
 			}, 100);
 			try {
-				await ctx.plugin.tmApprovedReady;
+				// 与在线路径对齐的安全阀：tmApprovedReady 若因底层 IO 卡住（见 plugin.ts 30s 兜底
+				// 前的窗口），离线路径也必须最多等 15s 就降级继续，否则首屏会停在加载页、
+				// 且下方 finally 的 clearInterval 得不到执行（100ms 定时器常驻刷提示）。
+				await Promise.race([
+					ctx.plugin.tmApprovedReady,
+					new Promise<void>((r) => window.setTimeout(r, 15_000)),
+				]);
 				const waitMoreOffline = minVisibleUntilOffline - Date.now();
 				if (waitMoreOffline > 0) await new Promise((r) => window.setTimeout(r, waitMoreOffline));
 			} finally {

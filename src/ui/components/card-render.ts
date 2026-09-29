@@ -33,7 +33,8 @@ function hideYulinTip(): void {
 }
 function showYulinTip(anchor: HTMLElement, text: string): void {
 	hideYulinTip();
-	const tip = document.createElement("div");
+	// 用 Obsidian 的 createDiv 而非 document.createElement（lint: obsidianmd/prefer-create-el）
+	const tip = createDiv();
 	tip.setCssStyles({
 		position: "fixed",
 		zIndex: "1000",
@@ -49,11 +50,14 @@ function showYulinTip(anchor: HTMLElement, text: string): void {
 		pointerEvents: "none",
 	});
 	text.split("\n").forEach((line, i) => {
-		const d = document.createElement("div");
+		const d = tip.createDiv();
 		if (i === 0) {
-			d.style.fontWeight = "600";
-			d.style.color = "var(--interactive-accent, #e8862e)";
-			d.style.marginBottom = "4px";
+			// 首行标题：静态样式走 setCssStyles（lint: obsidianmd/no-static-styles-assignment）
+			d.setCssStyles({
+				fontWeight: "600",
+				color: "var(--interactive-accent, #e8862e)",
+				marginBottom: "4px",
+			});
 		}
 		d.textContent = line;
 		tip.appendChild(d);

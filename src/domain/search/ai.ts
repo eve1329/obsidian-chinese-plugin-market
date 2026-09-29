@@ -20,6 +20,7 @@ import {
 	createEmbeddingProvider,
 	buildVectorIndex,
 	vectorRecallScores,
+	embeddingIndexKey,
 	type EmbeddingProvider,
 	type VectorIndex,
 } from "@semantic/embedding";
@@ -453,7 +454,19 @@ export class AISearcher {
 		// 与 buildLocalIndex 用 localModel（bge）建的索引 model 不一致 → 每次搜索都
 		// needBuild=true → 全量重建 embed 几千条 → 慢。现统一为实际所用模型的 key，
 		// 使重启后加载的 SQLite 索引能正确复用（needBuild=false）。
-		const indexModel = embCfg.source === "local" ? embCfg.localModel : embCfg.model;
+		//
+		// 索引身份还必须包含「embedding 供应商」：同名模型在不同服务商（或不同自建网关）
+		// 之间并不共享向量空间。只比模型名会让「换了 baseURL 但模型名没变」的用户
+		// 直接复用旧空间索引 → 余弦打分全是假的，且不报错、不重建，极难排查。
+		// 安全约束：apiKey 绝不可进入 key（该 key 会写进 SQLite meta 并出现在日志里）。
+		// 必须与 plugin.buildLocalIndex 用同一套 key 规则（见 embeddingIndexKey），
+		// 否则两条路径会各自认为索引过期 → 每次搜索都全量重建。
+		const indexModel = embeddingIndexKey({
+			source: embCfg.source,
+			baseURL: embCfg.baseURL,
+			model: embCfg.model,
+			localModel: embCfg.localModel,
+		});
 
 		const indexPlugins = allPlugins.map((p) => {
 			const tag = this.pluginTags[p.id];

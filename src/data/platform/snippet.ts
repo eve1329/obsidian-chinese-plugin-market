@@ -202,6 +202,13 @@ export async function renameSnippet(
 	oldBase: string,
 	newBase: string,
 ): Promise<void> {
+	// 安全闸门：newBase 直接进 `${snippetDir}/${newBase}.css` 拼路径，
+	// 必须在任何读写之前拦截 `../../` 之类越权目标（createSnippet 有同名校验，
+	// 重命名入口历史上漏了，导致同级别 UI 两条写盘路径防护不对称）。
+	if (!isValidSnippetBaseName(newBase)) {
+		logger.warn("[Chinese Plugin Market] 拒绝重命名 CSS 片段：目标基名不合法", newBase);
+		throw new Error(`非法的 CSS 片段基名：${newBase}`);
+	}
 	const dir = snippetDir(app);
 	const content = await readSnippetContent(app, `${dir}/${oldBase}.css`);
 	await writeSnippet(app, newBase, content);
