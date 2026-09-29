@@ -266,6 +266,8 @@ export interface ViewContext {
 	authorExpanded: boolean;
 	activeAuthorLetter: string | null;
 	recommendedOnly: boolean;
+	/** 高级筛选面板（「筛选 ▾」）是否展开：展开时隐藏首页「羽鳞君出品」推荐区 */
+	advancedOpen: boolean;
 
 	// ── 统计 ──
 	statsMap: Map<string, PluginStat>;
@@ -696,6 +698,8 @@ export function createViewContext(view: ChinesePluginMarketView): ViewContext {
 		set selectedCategories(v) { view.selectedCategories = v; },
 		get authorFilter() { return view.authorFilter; },
 		set authorFilter(v) { view.authorFilter = v; },
+		get advancedOpen() { return view.advancedOpen; },
+		set advancedOpen(v) { view.advancedOpen = v; },
 get authorFacetList() { return view.authorFacetList; },
 	set authorFacetList(v) { view.authorFacetList = v; },
 	get authorExpanded() { return view.authorExpanded; },

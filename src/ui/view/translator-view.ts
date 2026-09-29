@@ -944,6 +944,8 @@ public exitCompareMode = () => exitCompareMode(this._ctx);
 	public selectedCategories: string[] = [];
 	/** 作者维度：当前按作者精确筛选（null 表示不过滤）。卡片作者钻取与作者 facet 共用此状态 */
 	public authorFilter: string | null = null;
+	/** 高级筛选面板（「筛选 ▾」）是否展开：展开时隐藏首页「羽鳞君出品」推荐区 */
+	public advancedOpen = false;
 	/** 作者维度：作品数≥2 的多插件作者列表（facet 快捷筛选；长尾单插件作者走卡片钻取/搜索） */
 	public authorFacetList: AuthorGroup[] = [];
 	/** 中文生态插件 id 集合（plugin-chinese-ecosystem.json 人工清单；算法判定在 chinese-ecosystem.ts） */

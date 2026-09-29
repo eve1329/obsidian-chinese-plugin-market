@@ -43,6 +43,7 @@ export function renderFeaturedSection(ctx: ViewContext) {
 	// 更新 / 直链 / CSS 片段 / 收藏等页签，导致「羽鳞君出品」误现在其它板块。
 	const show =
 		ctx.viewTab === "browse" &&
+		!ctx.advancedOpen &&
 		!ctx.searchQuery.trim() &&
 		!ctx.authorFilter &&
 		!ctx.recommendedOnly &&

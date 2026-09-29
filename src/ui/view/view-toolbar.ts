@@ -1144,6 +1144,8 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 		// 折叠交互
 		toggleBtn.addEventListener("click", () => {
 			const open = advanced.classList.toggle("pt-open");
+			ctx.advancedOpen = open;
+			ctx.renderFeaturedSection();
 			toggleBtn.setAttribute("aria-expanded", open ? "true" : "false");
 			toggleBtn.setAttribute(
 				"aria-label",
