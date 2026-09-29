@@ -573,6 +573,8 @@ export const STRINGS = {
 	"settings.updateManage.window.30": { zh: "30天" },
 	"settings.updateManage.window.90": { zh: "90天" },
 	"settings.updateManage.window.365": { zh: "1年" },
+	"settings.updateManage.window.beyond365": { zh: "超1年未更新" },
+	"settings.updateManage.window.beyond730": { zh: "超2年未更新" },
 	"settings.updateManage.healthBadge": { zh: "显示健康度徽标" },
 	"settings.updateManage.healthBadge.desc": {
 		zh: "在卡片上用彩色点标注维护状态：活跃 / 放缓 / 停更风险。",

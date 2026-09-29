@@ -272,6 +272,8 @@ export class TranslatorSettingTab extends PluginSettingTab {
 								"30": this.t("settings.updateManage.window.30"),
 								"90": this.t("settings.updateManage.window.90"),
 								"365": this.t("settings.updateManage.window.365"),
+								"-365": this.t("settings.updateManage.window.beyond365"),
+								"-730": this.t("settings.updateManage.window.beyond730"),
 							},
 						},
 					},

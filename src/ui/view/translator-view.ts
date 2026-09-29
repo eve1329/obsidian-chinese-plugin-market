@@ -103,11 +103,11 @@ export interface ChinesePluginMarketSettings {
 	favoriteGroupOf: Record<string, string>;
 	/** 新上线窗口天数：null 表示不过滤（默认），可选 1/3/7/30/90/365 */
 	newWithinDays: number | null;
-	/** 近期更新：非 null 时只保留近 updatedWithinDays 天有版本更新的插件（默认 null = 不过滤） */
+	/** 更新时间筛选：正数=近 N 天内有版本更新；负数=超过 |N| 天未更新；null=不过滤（默认） */
 	updatedWithinDays: number | null;
 	/** 默认上线窗口（设置预设，打开市场时套用；null = 不过滤） */
 	defaultNewWithinDays: number | null;
-	/** 默认更新窗口（设置预设，打开市场时套用；null = 不过滤） */
+	/** 默认更新窗口预设（正数=近N天内有更新，负数=超|N|天未更新；打开市场时套用，null=不过滤） */
 	defaultUpdatedWithinDays: number | null;
 	/** 卡片显示维护健康度徽标（healthy/aging/at-risk 彩色点） */
 	showHealthBadge: boolean;
@@ -431,12 +431,13 @@ export class ChinesePluginMarketView extends ItemView {
 		this.compareSet = new Set(plugin.settings.compare);
 		// 水合新上线窗口天数：打开市场时套用设置里「默认上线窗口」预设（defaultNewWithinDays）。
 		// default 字段与工具栏临时点选的 newWithinDays 分离，重开回到预设而非残留临时态。
-		const VALID_WINDOWS = new Set([1, 3, 7, 30, 90, 365]);
+		const VALID_WINDOWS = new Set([1, 3, 7, 30, 90, 365, 730]);
 		const dnwd = plugin.settings.defaultNewWithinDays;
 		this.newWithinDays = typeof dnwd === "number" && VALID_WINDOWS.has(dnwd) ? dnwd : null;
 		// 水合近期更新窗口：套用设置里「默认更新窗口」预设（defaultUpdatedWithinDays）
 		const duwd = plugin.settings.defaultUpdatedWithinDays;
-		this.updatedWithinDays = typeof duwd === "number" && VALID_WINDOWS.has(duwd) ? duwd : null;
+		this.updatedWithinDays =
+			typeof duwd === "number" && (VALID_WINDOWS.has(duwd) || VALID_WINDOWS.has(-duwd)) ? duwd : null;
 		// 跨会话恢复列表拉取时间：避免 lastListFetchAt 重启归零导致 isListStale(0,now,6h)
 		// 恒真 → 每次启动都强制重拉列表 + 重译可见项（修复「每次重启都要重新加载翻译」）
 		this.lastListFetchAt = plugin.lastListFetchAt;
