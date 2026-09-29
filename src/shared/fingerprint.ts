@@ -25,17 +25,20 @@ export interface FingerprintInput {
 	description: string;
 }
 
-/** 分类/标签信息 */
+/** 分类、标签和可选双语字段信息 */
 export interface FingerprintTags {
 	category?: string;
 	tags?: string[];
+	/** 中文译名/译描；存在时纳入向量索引失效签名。 */
+	nameZh?: string;
+	descZh?: string;
 }
 
 /** 两个索引各自的失效签名 */
 export interface IndexFingerprints {
 	/** 覆盖 id/name/description —— BM25 索引的失效判定 */
 	bm25: string;
-	/** 覆盖 id/name/description/category/tags —— 向量索引的失效判定 */
+	/** 覆盖 id/name/description/category/tags 及可选双语字段 —— 向量索引的失效判定 */
 	fields: string;
 }
 
@@ -48,8 +51,8 @@ const ITEM_SEP = 0x1e;
  * 单趟遍历算出两个索引的失效签名。
  *
  * @param items  插件基础字段（id/name/description）
- * @param tagsOf 分类/标签访问器；不传则 fields 签名只覆盖基础字段
- *               （等价于所有插件都没有 category/tags）
+	 * @param tagsOf 分类/标签/双语字段访问器；不传则 fields 签名只覆盖基础字段
+	 *               （等价于所有插件都没有 category/tags/双语字段）
  */
 export function computeIndexFingerprints<T extends FingerprintInput>(
 	items: T[],
@@ -96,6 +99,17 @@ export function computeIndexFingerprints<T extends FingerprintInput>(
 			fields = (fields * 33 + category.charCodeAt(i)) | 0;
 		}
 		fields = (fields * 33 + FIELD_SEP) | 0;
+
+		const nameZh = tagInfo?.nameZh;
+		const descZh = tagInfo?.descZh;
+		if (nameZh !== undefined || descZh !== undefined) {
+			for (const value of [nameZh ?? "", descZh ?? ""]) {
+				for (let i = 0; i < value.length; i++) {
+					fields = (fields * 33 + value.charCodeAt(i)) | 0;
+				}
+				fields = (fields * 33 + FIELD_SEP) | 0;
+			}
+		}
 
 		const tags = tagInfo?.tags;
 		if (tags) {
