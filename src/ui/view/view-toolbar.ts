@@ -1068,25 +1068,32 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 		});
 	});
 
-	// ── 近期更新筛选（近 N 天有版本更新；null = 不过滤） ──
+	// ── 更新时间筛选（近 N 天有更新 / 超过 N 天未更新；null = 不过滤） ──
 	const updRow = advancedInner.createDiv({ cls: "pt-facet-row" });
 	updRow.createSpan({ cls: "pt-facet-label", text: "更新" });
 	const updChip = updRow.createDiv({ cls: "pt-facet-chips" });
-	// 「更新」过滤：无 "全部" 选项，默认不过滤；点窗口胶囊激活，再点同一胶囊取消
-	const UPD_WINDOWS = [1, 3, 7, 30, 90, 365];
-	const UPD_LABELS = ["24h", "3天", "7天", "30天", "90天", "1年"];
-	const updToggles = UPD_WINDOWS.map((_, i) =>
-		updChip.createEl("button", { cls: "pt-filter", text: UPD_LABELS[i] })
-	);
+	// 正向「近 N 天内有更新」与反向「超过 N 天未更新」两组；点胶囊激活，再点同一胶囊取消
+	const UPD_OPTIONS = [
+		{ days: 30, dir: "within", label: "30天内有更新" },
+		{ days: 90, dir: "within", label: "90天内有更新" },
+		{ days: 365, dir: "within", label: "1年内有更新" },
+		{ days: 365, dir: "beyond", label: "超1年未更新" },
+		{ days: 730, dir: "beyond", label: "超2年未更新" },
+	] as const;
+	const updValue = (o: (typeof UPD_OPTIONS)[number]) => (o.dir === "within" ? o.days : -o.days);
+	const POSITIVE_COUNT = UPD_OPTIONS.filter((o) => o.dir === "within").length;
+	const updToggles: HTMLElement[] = [];
 	const updateUpdToggle = () => {
 		updToggles.forEach((el, i) => {
-			el.setAttribute("aria-pressed", ctx.updatedWithinDays === UPD_WINDOWS[i] ? "true" : "false");
+			el.setAttribute("aria-pressed", ctx.updatedWithinDays === updValue(UPD_OPTIONS[i]) ? "true" : "false");
 		});
 	};
-	updateUpdToggle();
-	updToggles.forEach((el, i) => {
-		el.addEventListener("click", () => {
-			const val = UPD_WINDOWS[i];
+	UPD_OPTIONS.forEach((o, i) => {
+		if (i === POSITIVE_COUNT) updChip.createEl("span", { cls: "pt-facet-sep", text: "·" });
+		const btn = updChip.createEl("button", { cls: "pt-filter", text: o.label });
+		updToggles.push(btn);
+		btn.addEventListener("click", () => {
+			const val = updValue(o);
 			ctx.updatedWithinDays = ctx.updatedWithinDays === val ? null : val;
 			ctx.settings.updatedWithinDays = ctx.updatedWithinDays;
 			ctx.saveSettings();
@@ -1094,6 +1101,7 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 			ctx.scheduleRender(true);
 		});
 	});
+	updateUpdToggle();
 
 
 

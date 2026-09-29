@@ -150,7 +150,7 @@ export interface ViewContext {
 	journalVerdictIds: Map<string, Set<string>>;
 	/** 新上线窗口天数：null 表示不过滤；合法值 7/30/90 */
 	newWithinDays: number | null;
-	/** 近期更新：非 null 时只保留近 updatedWithinDays 天有版本更新的插件 */
+	/** 更新时间筛选：正数=近N天有更新，负数=超|N|天未更新，null=不过滤 */
 	updatedWithinDays: number | null;
 	sortBy: SortBy;
 	dataLoaded: boolean;

@@ -200,7 +200,7 @@ export interface MatchOptions {
 	newWithinDays?: number | null;
 	/** 插件 id → 首次进入官方市场的真实时间（ms）；来自 plugin-release-dates.json（git history 解析） */
 	releaseDatesMap?: Map<string, number>;
-	/** 近期更新：非 null 时只保留近 updatedWithinDays 天有版本更新的插件（null = 不过滤） */
+	/** 更新时间筛选：正数=近 N 天内有版本更新；负数=超过 |N| 天未更新；null=不过滤（默认） */
 	updatedWithinDays?: number | null;
 	/** 分类筛选：选中分类列表（多选取并集；空/undefined 不过滤） */
 	selectedCategories?: string[];
@@ -278,10 +278,15 @@ export function matchesPlugin(
 		const listedAt = opts.releaseDatesMap?.get(p.id);
 		if (listedAt == null || listedAt <= 0 || Date.now() - listedAt > opts.newWithinDays * 86_400_000) return false;
 	}
-	// 近期更新：仅保留近 updatedWithinDays 天有版本更新的插件（null/0 = 不过滤）
-	if (opts.updatedWithinDays && opts.updatedWithinDays > 0) {
+	// 更新时间筛选：正数=近 N 天内有版本更新；负数=超过 |N| 天未更新（null/0 = 不过滤）
+	if (opts.updatedWithinDays) {
 		const u = p.updated;
-		if (!u || Date.now() - u > opts.updatedWithinDays * 86_400_000) return false;
+		if (opts.updatedWithinDays > 0) {
+			if (!u || Date.now() - u > opts.updatedWithinDays * 86_400_000) return false;
+		} else {
+			const beyond = -opts.updatedWithinDays;
+			if (!u || Date.now() - u <= beyond * 86_400_000) return false;
+		}
 	}
 	// 分类筛选：仅保留分类匹配的插件（多选取并集；所有模式生效，作为全局发现维度）
 	if (opts.selectedCategories?.length && opts.pluginTagMap) {
@@ -375,7 +380,7 @@ export interface FilterParams {
 	newWithinDays?: number | null;
 	/** 插件 id → 首次进入官方市场的真实时间（ms）；来自 plugin-release-dates.json */
 	releaseDatesMap?: Map<string, number>;
-	/** 近期更新：非 null 时只保留近 updatedWithinDays 天有版本更新的插件 */
+	/** 更新时间筛选：正数=近 N 天内有版本更新；负数=超过 |N| 天未更新；null=不过滤（默认） */
 	updatedWithinDays?: number | null;
 	/** 分类筛选：选中分类列表（多选取并集） */
 	selectedCategories?: string[];
