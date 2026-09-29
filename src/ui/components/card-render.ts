@@ -314,8 +314,21 @@ export function createCardElement(ctx: CardRenderContext): HTMLElement {
 	// 羽鳞精选徽标：放在底部元信息行最前，不压安装按钮，也不占标题行空间
 	const yulinBadge = metaInfo.createSpan({ cls: "pt-card-yulin-badge" });
 	yulinBadge.textContent = ctx.t("yulin.badge");
-	yulinBadge.setAttribute("title", ctx.t("yulin.badge"));
-	yulinBadge.setCssStyles({ display: "none" });
+	const yulinCriteria = ctx.t("yulin.badge.criteria");
+	yulinBadge.setAttribute("title", yulinCriteria);
+	yulinBadge.setCssStyles({ display: "none", cursor: "pointer" });
+	yulinBadge.addEventListener("click", (ev) => {
+		ev.preventDefault();
+		ev.stopPropagation();
+		const frag = document.createDocumentFragment();
+		yulinCriteria.split("\n").forEach((line, i) => {
+			const lineEl = document.createElement("div");
+			lineEl.className = i === 0 ? "pt-yulin-criteria-title" : "pt-yulin-criteria-line";
+			lineEl.textContent = line;
+			frag.appendChild(lineEl);
+		});
+		new Notice(frag, 12000);
+	});
 
 	const authorSpan = metaInfo.createSpan({
 		cls: "pt-meta-chip pt-meta-chip--author",

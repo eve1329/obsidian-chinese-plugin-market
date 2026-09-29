@@ -190,6 +190,10 @@ export const STRINGS = {
 	// 官方推荐（羽鳞君策划，随包发布的 plugin-recommend.json）
 	"recommend.badge": { zh: "推荐" },
 	"yulin.badge": { zh: "羽鳞精选" },
+	// 悬停 / 点击「羽鳞精选」徽标时展示的入选标准
+	"yulin.badge.criteria": {
+		zh: "羽鳞精选v1.0标准公示\n1. 官方正式上线插件\n2. Health 评级 4 格全绿\n3. Review 评级 4 格全绿\n4. 插件支持中文语言体系\n5. 插件得到羽鳞君认可",
+	},
 	"recommend.filter": { zh: "推荐" },
 	"recommend.title": { zh: "官方推荐" },
 	"recommend.section.collapse": { zh: "收起" },
