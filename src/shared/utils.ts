@@ -546,7 +546,7 @@ export function topKBySimilarity(
 		);
 	}
 
-	const out: { index: number; score: number }[] = new Array(size);
+	const out: { index: number; score: number }[] = [];
 	for (let i = 0; i < size; i++) out[i] = { index: heapIdx[i], score: heapScore[i] };
 	out.sort((a, b) => b.score - a.score || a.index - b.index);
 	return out;

@@ -30,7 +30,7 @@ interface SegmentLike {
 	segment(text: string): Iterable<{ segment: string; isWordLike?: boolean }>;
 }
 const IntlRecord: Record<string, unknown> =
-	typeof Intl !== "undefined" ? (Intl as unknown as Record<string, unknown>) : {};
+	typeof Intl !== "undefined" ? Intl : {};
 const SegmenterCtor = IntlRecord.Segmenter as
 	| (new (locale: string, opts: { granularity: string }) => SegmentLike)
 	| undefined;

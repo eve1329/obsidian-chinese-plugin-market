@@ -674,7 +674,7 @@ export class AISearcher {
 			buildVectorIndex(
 				provider,
 				indexPlugins,
-				indexModel!,
+				indexModel,
 				prevIndex,
 				this.tagService.getSchemaVersion(),
 				precomputedFieldsHash,
