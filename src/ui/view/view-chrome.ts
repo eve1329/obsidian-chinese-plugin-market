@@ -604,7 +604,7 @@ export async function loadAndRender(ctx: ViewContext) {
 		void ctx.ensureDataLoaded().then((ok) => {
 			if (ok) {
 				// 默认按下载量降序展示全量列表（若用户未自定义排序偏好）
-				if (ctx.sortBy === "relevance") {
+				if (ctx.searchMode === "keyword" && ctx.sortBy === "relevance") {
 					ctx.sortBy = "downloads";
 					ctx.settings.sortBy = ctx.sortBy;
 					void ctx.saveSettings();
@@ -617,4 +617,3 @@ export async function loadAndRender(ctx: ViewContext) {
 		}).catch((e) => logger.warn("[Chinese Plugin Market] 初始化数据加载失败：", e));
 	
 }
-

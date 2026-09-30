@@ -153,6 +153,8 @@ export interface ViewContext {
 	/** 更新时间筛选：正数=近N天有更新，负数=超|N|天未更新，null=不过滤 */
 	updatedWithinDays: number | null;
 	sortBy: SortBy;
+	sortByUserSelected: boolean;
+	semanticSortBackup: SortBy | null;
 	dataLoaded: boolean;
 	dataLoading: boolean;
 	lastListFetchAt: number;
@@ -551,6 +553,10 @@ export function createViewContext(view: ChinesePluginMarketView): ViewContext {
 		set updatedWithinDays(v) { view.updatedWithinDays = v; },
 		get sortBy() { return view.sortBy; },
 		set sortBy(v) { view.sortBy = v; },
+		get sortByUserSelected() { return view.sortByUserSelected; },
+		set sortByUserSelected(v) { view.sortByUserSelected = v; },
+		get semanticSortBackup() { return view.semanticSortBackup; },
+		set semanticSortBackup(v) { view.semanticSortBackup = v; },
 		get dataLoaded() { return view.dataLoaded; },
 		set dataLoaded(v) { view.dataLoaded = v; },
 		get dataLoading() { return view.dataLoading; },

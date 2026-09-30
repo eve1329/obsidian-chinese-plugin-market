@@ -245,6 +245,19 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 		// 模式切换处理（自绘菜单项点击 → applySearchMode）
 		const applySearchMode = (newMode: SearchMode) => {
 			if (ctx.searchMode === newMode) return;
+			const previousMode = ctx.searchMode;
+			const enteringSemantic = newMode === "local" || newMode === "ai";
+			const leavingSemantic = previousMode !== "keyword" && newMode === "keyword";
+			// 浏览首页默认按下载量展示，但语义查询必须保留召回相关度。
+			// 仅在本次会话尚未主动选过排序时临时切换；用户点选排序后尊重其选择。
+			if (enteringSemantic && previousMode === "keyword" && !ctx.sortByUserSelected) {
+				ctx.semanticSortBackup = ctx.sortBy;
+				ctx.sortBy = "relevance";
+			}
+			if (leavingSemantic && !ctx.sortByUserSelected && ctx.semanticSortBackup) {
+				ctx.sortBy = ctx.semanticSortBackup;
+			}
+			if (leavingSemantic) ctx.semanticSortBackup = null;
 			ctx.searchMode = newMode;
 			// H1 双保险：模式切换即失效前缀缓存（filter.ts 的 lastFilterMode 判定为第一道防线）
 			ctx.filterCache.reset();
@@ -261,6 +274,10 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 			// 排序菜单「收藏优先」项 active 态复位
 			const favItemEl = q(ctx.contentEl, ".pt-sort-menu-item--fav");
 			if (favItemEl) favItemEl.classList.remove("pt-sort-menu-item--active");
+			// 语义模式默认切回相关度时，同步排序菜单的选中态。
+			ctx.contentEl.querySelectorAll(".pt-sort-menu-item[data-sort]").forEach((el) => {
+				el.classList.toggle("pt-sort-menu-item--active", el.getAttribute("data-sort") === ctx.sortBy);
+			});
 			// 作者筛选：下方会调用 ctx.renderAuthorFacet() 按 authorFilter=null 重建 chips，清空高亮
 			const modeDef = SEARCH_MODES.find((m) => m.id === newMode)!;
 			searchInput.setAttribute("placeholder", ctx.t(modeDef.placeholder));
@@ -687,6 +704,8 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 			if (value === ctx.sortBy) item.classList.add("pt-sort-menu-item--active");
 			item.addEventListener("click", () => {
 				ctx.sortBy = value;
+				ctx.sortByUserSelected = true;
+				ctx.semanticSortBackup = null;
 				ctx.sortFavoritesFirst = false; // 选普通排序时关闭「收藏优先」叠层
 				ctx.settings.sortBy = ctx.sortBy;
 				ctx.track(`sort:${ctx.sortBy}`);

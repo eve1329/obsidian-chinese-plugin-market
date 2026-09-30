@@ -417,6 +417,10 @@ export class ChinesePluginMarketView extends ItemView {
 
 	// ── 结果排序（产品改进 #5）。初值来自持久化设置，UI 切换即时生效并保存。──
 	public sortBy: SortBy = "relevance";
+	/** 本次视图会话内是否主动点选过排序；默认热门排序不应覆盖语义搜索相关度。 */
+	public sortByUserSelected = false;
+	/** 进入语义模式前的浏览排序，离开语义模式且未改排序时恢复。 */
+	public semanticSortBackup: SortBy | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: ChinesePluginMarketPlugin) {
 		super(leaf);
@@ -1324,5 +1328,4 @@ public flashAction = (btn: HTMLElement) => flashAction(this._ctx, btn);
 // ──────────────────────────────────────────
 // 主插件类
 // ──────────────────────────────────────────
-
 
