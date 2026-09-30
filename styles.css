@@ -1877,8 +1877,11 @@ button.pt-facet-letter-btn.is-active {
 	height: 14px;
 	stroke-width: 2px;
 }
-/* 语义模式（AI）下 badge 占据最右，清除按钮左移让位；本地语义 badge 已隐藏，无需让位 */
-.pt-search.pt-search-ai .pt-search-clear { right: 44px; }
+/* 清除按钮与 AI 徽章同为绝对定位、共用 right:8px 锚点。徽章宽度随文案变化
+   （本地 / 本地检索中 / 下载模型中 X% / AI · Enter 触发），由 view-toolbar 的
+   ResizeObserver 实时把清除按钮让位到徽章左侧（inline style），此处不再按
+   模式写死偏移（旧 .pt-search-ai 的 44px 硬编码与本地模式徽章常驻现状不符，
+   曾导致 × 压在徽章正下方、透过 opacity 脉冲的半透明徽章形成文字叠影）。 */
 
 /* AI 搜索进行时：下划线高亮 + 输入区流光反馈，保持扁平无框 */
 .pt-search.pt-search--ai-loading {
@@ -1940,10 +1943,10 @@ button.pt-facet-letter-btn.is-active {
 	color: var(--pt-accent);
 	border: 1px solid color-mix(in srgb, var(--pt-accent) 35%, transparent);
 }
-@keyframes pt-ai-pulse {
-	0%, 100% { opacity: 1; transform: translateY(-50%) scale(1); }
-	50% { opacity: 0.6; transform: translateY(-50%) scale(1.08); }
-}
+/* 注意：pt-ai-pulse 在下方 .pt-ai-loading-state 处定义（纯 opacity 1↔0.6）。
+   此前本处曾重复定义过一个带 transform scale 的同名 keyframes，按 CSS 规则
+   被后者整体覆盖属死代码，已删除——徽章下若压有元素（旧清除按钮叠放 bug），
+   opacity 脉冲会让其透出形成文字叠影，勿再让任何元素与徽章同锚叠放。 */
 
 /* ── 列表容器（虚拟滚动视口） ── */
 .pt-list.pt-list-viewport {
@@ -6137,6 +6140,30 @@ button.pt-card-install-btn--installed {
 .pt-index-progress::-webkit-progress-value {
 	background: var(--interactive-accent, var(--pt-accent, #7b6cff));
 	border-radius: var(--pt-radius-pill);
+}
+
+/* ── 搜索框内：本地模型下载进度（贴搜索框下缘的细进度条） ──
+   必须是绝对定位覆盖层：作为 .pt-search-field 的普通 flex 子项会被 width:100%
+   的输入框挤成 0 宽、内容向右溢出，与「找到 N 个」计数和 AI 徽章三层重叠
+   （且溢出内容拦截指针事件）。百分比文案由 AI 徽章单一出口承担，此处只画条。 */
+.pt-model-progress {
+	position: absolute;
+	left: 8px;
+	right: 8px;
+	bottom: 2px;
+	height: 3px;
+	display: none;
+	pointer-events: none;
+	z-index: 5;
+}
+.pt-model-progress.is-active {
+	display: block;
+}
+.pt-model-progress .pt-index-progress {
+	display: block;
+	width: 100%;
+	height: 3px;
+	margin: 0;
 }
 
 /* ── S7 滚动位置指示徽标 ── */

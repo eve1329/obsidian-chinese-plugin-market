@@ -181,6 +181,19 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 		// AI 搜索状态徽章（仅语义模式显示）：展示「按 Enter 触发」契约 + 未配置 Key 引导。
 		// 关键词模式隐藏；语义模式下文案直接告知用户需按 Enter，避免「输入即搜」习惯导致以为搜索失效。
 		const aiBadge = searchField.createSpan({ cls: "pt-ai-badge pt-ai-off" });
+		// 清除按钮与徽章同为绝对定位、共用 right:8px 锚点（见 .pt-search-clear）。
+		// 徽章文案随状态被多方改写（本地 / 本地检索中 / 下载模型中 X% / AI · Enter 触发），
+		// 宽度随之变化；且 pt-ai-active 有 opacity 脉冲动画——清除按钮若压在徽章正下方，
+		// × 图标会透过半透明徽章形成「文字叠影」（本地模式曾必现：让位逻辑只覆盖了 AI 模式）。
+		// 用 ResizeObserver 监听徽章尺寸变化，让清除按钮始终让位到徽章左侧
+		// （徽章隐藏时 offsetWidth=0 → 回落 CSS 默认 8px），取代各分支手动量宽的单次逻辑。
+		const syncClearToBadge = () => {
+			const w = aiBadge.offsetWidth;
+			clearBtn.setCssStyles({ right: w > 0 ? `${w + 10}px` : "" });
+		};
+		const badgeResizeOb = new ResizeObserver(syncClearToBadge);
+		badgeResizeOb.observe(aiBadge);
+		ctx.register(() => badgeResizeOb.disconnect());
 		const updateModeBadge = () => {
 			if (!isAIMode(ctx) && !isLocalMode(ctx)) {
 				aiBadge.setCssStyles({ display: "none" });
@@ -204,12 +217,6 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 					aiBadge.setText("配置 AI · Enter");
 					aiBadge.setAttribute("title", "点击配置 AI 搜索，用自然语言描述需求，按 Enter 触发");
 				}
-				// 清除按钮在 badge 左侧动态让位，避免不同文案长度导致重叠
-				// 用 requestAnimationFrame 等一次布局，确保 offsetWidth 已包含新文案
-				window.requestAnimationFrame(() => {
-					const w = aiBadge.offsetWidth;
-					clearBtn.setCssStyles({ right: w > 0 ? `${w + 10}px` : "" });
-				});
 			} else {
 				// 本地语义：无需 Key、无需联网。保留 badge 可见（显示「本地」），
 				// 与左侧下拉标签并不重复——它是「当前处于本地语义模式」的状态指示，
@@ -218,7 +225,6 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 				aiBadge.className = "pt-ai-badge pt-ai-ready";
 				aiBadge.setText("本地");
 				aiBadge.setAttribute("title", "本地语义模式：离线向量召回，免 API Key");
-				clearBtn.setCssStyles({ right: "" });
 			}
 		};
 		// 无 Key 的 AI 模式点击徽章跳设置；本地模式不显示 badge

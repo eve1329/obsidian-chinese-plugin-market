@@ -65,7 +65,7 @@ export async function runAISearch(
 	searchInput.closest?.(".pt-search")?.addClass("pt-search--ai-loading");
 
 	// 首次本地语义搜索的模型下载进度条（与设置页同款）。声明在 try 外，供 finally 清理。
-	let modelBar: { el: HTMLElement; pct: HTMLElement } | null = null;
+	let modelBar: { el: HTMLElement } | null = null;
 	let modelBarTimer = 0;
 
 	try {
@@ -203,25 +203,24 @@ export async function runAISearch(
 }
 
 /**
- * 在搜索输入框容器内挂载与设置页同款的本地模型下载进度条（原生 <progress> + 百分比文案）。
- * 返回 { el, pct } 供轮询更新；组件本身随 runAISearch 的 finally 一并移除。
+ * 在搜索框下缘挂载本地模型下载进度细条（原生 <progress>，绝对定位覆盖层）。
+ * 返回 { el } 供轮询更新；组件本身随 runAISearch 的 finally 一并移除。
+ * 不作为 .pt-search-field 的普通 flex 子项存在——否则会被 width:100% 的输入框
+ * 挤成 0 宽、内容向右溢出，与「找到 N 个」计数和 AI 徽章三层重叠。
  */
-function mountLocalModelProgressBar(searchInput: HTMLInputElement): { el: HTMLElement; pct: HTMLElement } | null {
+function mountLocalModelProgressBar(searchInput: HTMLInputElement): { el: HTMLElement } | null {
 	const field = searchInput.closest?.(".pt-search-field");
 	if (!field) return null;
 	const wrap = field.createDiv({ cls: "pt-model-progress" });
 	const bar = wrap.createEl("progress", { cls: "pt-index-progress" });
 	bar.max = 100;
 	bar.value = 0;
-	bar.setCssStyles({ display: "none", width: "100%", margin: "6px 0 0" });
-	const pct = wrap.createSpan({ cls: "pt-model-progress-pct", text: "" });
-	pct.setCssStyles({ display: "none", fontSize: "11px", opacity: "0.8", margin: "2px 0 0" });
-	return { el: wrap, pct };
+	return { el: wrap };
 }
 
-/** 轮询回调：根据 plugin.localModelState 更新进度条可见性与百分比。 */
+/** 轮询回调：根据 plugin.localModelState 更新进度条可见性与百分比（经 AI 徽章单一出口）。 */
 function updateLocalModelProgressBar(
-	bar: { el: HTMLElement; pct: HTMLElement },
+	bar: { el: HTMLElement },
 	st: { status: "idle" | "downloading" | "ready" | "error"; loaded: number; total: number },
 	aiBadge: HTMLElement
 ): void {
@@ -230,14 +229,12 @@ function updateLocalModelProgressBar(
 	if (st.status === "downloading" && st.total > 0) {
 		const p = Math.round((st.loaded / st.total) * 100);
 		progress.value = p;
-		progress.setCssStyles({ display: "" });
-		bar.pct.setText(`正在下载本地模型 ${p}%`);
-		bar.pct.setCssStyles({ display: "" });
-		aiBadge.setText("下载模型中");
+		bar.el.addClass("is-active");
+		// 百分比并入 AI 徽章文案：状态只有徽章一处出口，避免徽章与独立进度文案双份重叠
+		aiBadge.setText(`下载模型中 ${p}%`);
 		aiBadge.setAttribute("title", `正在下载本地模型（${p}%）…`);
 	} else {
 		// 下载完成（ready）/出错/空闲：隐藏进度条（badge 由 runAISearch 主流程接管文案）
-		progress.setCssStyles({ display: "none" });
-		bar.pct.setCssStyles({ display: "none" });
+		bar.el.removeClass("is-active");
 	}
 }
