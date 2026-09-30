@@ -502,7 +502,7 @@ export class AISearcher {
 		this.vectorIndex = await buildVectorIndex(
 			provider,
 			indexPlugins,
-			indexModel!,
+			indexModel,
 			this.vectorIndex,
 			this.tagService.getSchemaVersion(),
 		);
