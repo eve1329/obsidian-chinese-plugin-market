@@ -6139,6 +6139,30 @@ button.pt-card-install-btn--installed {
 	border-radius: var(--pt-radius-pill);
 }
 
+/* ── 搜索框内：本地模型下载进度（贴搜索框下缘的细进度条） ──
+   必须是绝对定位覆盖层：作为 .pt-search-field 的普通 flex 子项会被 width:100%
+   的输入框挤成 0 宽、内容向右溢出，与「找到 N 个」计数和 AI 徽章三层重叠
+   （且溢出内容拦截指针事件）。百分比文案由 AI 徽章单一出口承担，此处只画条。 */
+.pt-model-progress {
+	position: absolute;
+	left: 8px;
+	right: 8px;
+	bottom: 2px;
+	height: 3px;
+	display: none;
+	pointer-events: none;
+	z-index: 5;
+}
+.pt-model-progress.is-active {
+	display: block;
+}
+.pt-model-progress .pt-index-progress {
+	display: block;
+	width: 100%;
+	height: 3px;
+	margin: 0;
+}
+
 /* ── S7 滚动位置指示徽标 ── */
 .pt-scroll-pos {
 	position: absolute;
