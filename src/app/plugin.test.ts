@@ -84,6 +84,81 @@ describe("Plugin 持久化契约（P0 回归）", () => {
 		expect(plugin.settings.embeddingLocalModel).toBe("Xenova/custom-model");
 	});
 
+	it("向量索引未变化时不重复导出 SQLite", async () => {
+		const { plugin } = makePlugin();
+		const index = {
+			ids: ["plugin-a"],
+			vectors: [[1, 0]],
+			hash: "hash-a",
+			model: "local:Xenova/test",
+			fieldsHash: "fields-a",
+			categorySchemaVersion: "schema-a",
+			perIdHash: { "plugin-a": "row-a" },
+		};
+		plugin.translator.setVectorIndex(index);
+		const flush = vi.fn(async () => {});
+		const store = {
+			getMeta: (key: string) => ({
+				model: index.model,
+				hash: index.hash,
+				fieldsHash: index.fieldsHash,
+				categorySchemaVersion: index.categorySchemaVersion,
+				perIdHash: JSON.stringify(index.perIdHash),
+			}[key] ?? null),
+			upsertMany: vi.fn(),
+			deleteMany: vi.fn(),
+			replaceAll: vi.fn(),
+			setMeta: vi.fn(),
+			flush,
+		};
+		Object.assign(plugin as any, { vectorStore: store });
+
+		await plugin.saveVectorIndex();
+
+		expect(store.upsertMany).not.toHaveBeenCalled();
+		expect(store.deleteMany).not.toHaveBeenCalled();
+		expect(store.replaceAll).not.toHaveBeenCalled();
+		expect(store.setMeta).not.toHaveBeenCalled();
+		expect(flush).not.toHaveBeenCalled();
+	});
+
+	it("模型或分类 schema 变化时重写全部向量行", async () => {
+		const { plugin } = makePlugin();
+		const index = {
+			ids: ["plugin-a"],
+			vectors: [[1, 0]],
+			hash: "hash-a",
+			model: "local:new-model",
+			fieldsHash: "fields-a",
+			categorySchemaVersion: "schema-new",
+			perIdHash: { "plugin-a": "row-a" },
+		};
+		plugin.translator.setVectorIndex(index);
+		const storedMeta: Record<string, string> = {
+			model: "local:old-model",
+			hash: index.hash,
+			fieldsHash: index.fieldsHash,
+			categorySchemaVersion: "schema-old",
+			perIdHash: JSON.stringify(index.perIdHash),
+		};
+		const upsertMany = vi.fn();
+		const flush = vi.fn(async () => {});
+		const store = {
+			getMeta: (key: string) => storedMeta[key] ?? null,
+			upsertMany,
+			deleteMany: vi.fn(),
+			replaceAll: vi.fn(),
+			setMeta: vi.fn(),
+			flush,
+		};
+		Object.assign(plugin as any, { vectorStore: store });
+
+		await plugin.saveVectorIndex();
+
+		expect(upsertMany).toHaveBeenCalledWith([{ id: "plugin-a", vec: [1, 0], category: undefined }]);
+		expect(flush).toHaveBeenCalledTimes(1);
+	});
+
 	it("收藏筛选（favoriteFilter）改为会话级：不再持久化进 settings", async () => {
 		const { plugin, saveData } = makePlugin();
 		// 旧版 data.json 残留 favoriteFilter（boolean 或枚举）→ 加载后被丢弃，不回落到 settings

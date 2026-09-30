@@ -381,7 +381,7 @@ export interface VectorIndex {
 	 * 原始字段指纹（id+name+description+category+tags，不含 t2s 转换与文本拼装）。
 	 * 用于稳态搜索的「零成本复用判定」：fieldsHash 一致即代表文本拼装 + t2s 结果
 	 * 必然不变，可跳过全库文本拼装 / t2s / contentHash 直接复用（PERF-2）。
-	 * 仅存内存（不进 SQLite），冷启动后首次搜索回填一次即可。
+	 * 同步写入 SQLite，冷启动加载后仍可直接完成复用判定。
 	 */
 	fieldsHash?: string;
 	/**

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { setHttpClient, resetHttpClient } from "@data/net/http-port";
 import { AISearcher, buildBm25Index, bm25RecallScores } from "@domain/search/ai";
+import { embeddingIndexKey } from "@semantic/embedding";
 import { computeIndexFingerprints } from "@shared/fingerprint";
 import { bm25Score, tokenizeForBM25, BM25_K1, BM25_B, BM25_TOKENIZER_VERSION, bm25Idf, bm25LenNorm, bm25TermWeight } from "@domain/search/bm25";
 import { t2sForEmbed } from "@translation/lexicon/t2s";
@@ -313,6 +314,47 @@ describe("搜索分段计时（生产埋点）", () => {
 		const vectorWarn = warnArgs.find((a) => String(a[0]).includes("向量召回失败"));
 		expect(vectorWarn).toBeDefined();
 		expect(String((vectorWarn![1] as Error)?.message)).toContain("worker 源码加载器未注入");
+	});
+
+	it("后台 partial 索引直接召回，不在搜索侧重复 embed 全库", async () => {
+		const tagService = new PluginTagService();
+		const llm = new LLMClient({ baseURL: "https://api.example.com", apiKey: "sk-test", model: "test-model" });
+		const searcher = new AISearcher(
+			{
+				baseURL: "https://api.example.com",
+				apiKey: "sk-test",
+				model: "test-model",
+				embedding: {
+					source: "api",
+					baseURL: "https://embedding.example.com",
+					apiKey: "sk-embedding",
+					model: "embedding-model",
+				},
+			},
+			llm,
+			tagService,
+		);
+		const model = embeddingIndexKey({
+			source: "api",
+			baseURL: "https://embedding.example.com",
+			model: "embedding-model",
+		});
+		searcher.setVectorIndex({
+			ids: ["dataview"],
+			vectors: [[1, 0]],
+			hash: "",
+			model,
+			partial: true,
+		});
+		req.mockResolvedValue({
+			status: 200,
+			json: { data: [{ index: 0, embedding: [1, 0] }] },
+		});
+
+		await searcher.localSearch("database", [PLUGINS[0]]);
+
+		// 只有 query embedding 一次；若 partial 被当成旧索引重建，这里会是两次。
+		expect(req).toHaveBeenCalledTimes(1);
 	});
 });
 

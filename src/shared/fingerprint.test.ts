@@ -85,6 +85,14 @@ describe("computeIndexFingerprints · 与改造前的两份实现逐位一致", 
 		const b = computeIndexFingerprints(CORPUS, tagsOf);
 		expect(a).toEqual(b);
 	});
+
+	it("插件条目上的双语字段也参与 fields 指纹", () => {
+		const before = [{ id: "p", name: "Plugin", description: "desc", nameZh: "插件", descZh: "描述" }];
+		const after = [{ ...before[0], descZh: "新描述" }];
+
+		expect(computeIndexFingerprints(before).fields).not.toBe(computeIndexFingerprints(after).fields);
+		expect(computeIndexFingerprints(before).bm25).toBe(computeIndexFingerprints(after).bm25);
+	});
 });
 
 describe("computeIndexFingerprints · 两个签名的失效边界不同（保留双累加器的理由）", () => {

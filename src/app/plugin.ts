@@ -403,6 +403,9 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	} = { status: "idle", loaded: 0, total: 0 };
 	/** 当前构建的 Promise（并发去重用：让多次调用共享同一次构建，而非直接 return） */
 	private buildLocalIndexPromise: Promise<void> | null = null;
+	/** 分类与持久化索引的启动加载顺序，避免后台构建读到半初始化状态。 */
+	private vectorIndexLoadPromise: Promise<void> | null = null;
+	private pluginTagsLoadPromise: Promise<void> | null = null;
 	/** 已「见过」的插件 id 集合（产品改进 #16，跨会话落盘，增量提示在重启后仍准确） */
 	seenPluginIds: Set<string> = new Set();
 	/** 插件 id → 首次见时间戳（ms）；0 表示基线旧插件（不报新）。用于卡片「新」标记窗口判断（对齐竞品 newness.ts） */
@@ -1149,16 +1152,13 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				this.cachedTrendingHistory = t;
 			})
 			.catch((e) => logger.warn("[Chinese Plugin Market] 恢复趋势历史失败：", e));
-		// 恢复落盘向量索引（跨会话复用，无则下次搜索时重建）。
-		// 不 await：它最慢且首屏用不到（仅 AI / 本地语义搜索的向量召回需要），
-		// 后台加载即可；完成后再通知已打开的视图重渲染一次，
-		// 与原先「await 后统一重渲」的语义保持一致。
-		void this.loadVectorIndex().then(() => this.refreshOpenViews());
-		// 注：本地 embedding 预热已在上方并行启动，无需在此再次触发。
 		// 后台异步加载插件分类索引（不阻塞视图启动，加载完成后同步更新 pluginTagMap）
-		this.loadPluginTags().catch((e) =>
-			logger.warn("[Chinese Plugin Market] 后台加载分类索引失败：", e),
-		);
+		// 向量索引必须在分类加载完成后恢复：分类字段参与 embedding 文本，
+		// 否则启动早期后台构建会先写一份「无分类」索引，首搜再因 fieldsHash 变化重建。
+		this.pluginTagsLoadPromise = this.loadPluginTags();
+		this.vectorIndexLoadPromise = this.pluginTagsLoadPromise.then(() => this.loadVectorIndex());
+		void this.vectorIndexLoadPromise.then(() => this.refreshOpenViews());
+		// 注：本地 embedding 预热已在上方并行启动，无需在此再次触发。
 		// 后台异步加载插件上线日期索引（「上线」维度用，不阻塞视图启动）
 		this.loadReleaseDates().catch((e) =>
 			logger.warn("[Chinese Plugin Market] 后台加载上线日期失败：", e),
@@ -3102,7 +3102,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	 */
 	async buildLocalIndex(force = false): Promise<void> {
 		// 并发去重：复用同一次构建的 Promise，让重复调用等待结果而非直接 return（#26）
-		if (this.localIndexState.status === "building" && this.buildLocalIndexPromise) {
+		if (this.buildLocalIndexPromise) {
 			return this.buildLocalIndexPromise;
 		}
 		const plugins = this.getViewPlugins();
@@ -3137,6 +3137,9 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 		const run = async (): Promise<void> => {
 		try {
+			// loadVectorIndex 在 onLayoutReady 后异步执行；若不等待，下面的
+			// prevIdx 可能为空并触发一次完整构建，随后又被落盘索引覆盖，形成重复构建。
+			await this.vectorIndexLoadPromise;
 			const base = new LocalEmbeddingProvider(undefined, localModelName, this.settings.embeddingLocalWasmPaths || undefined, this.settings.embeddingRemoteHost || undefined);
 			// 时间片渐进构建（对齐 vault-curate 的 buildBM25Sliced）：每批 embed 后
 			// yield 一次主线程，让 UI 能重绘并实时显示进度，避免一次性大任务冻结界面。
@@ -3295,6 +3298,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 					});
 					const model = store.getMeta("model") || "";
 					const hash = store.getMeta("hash") || "";
+					const fieldsHash = store.getMeta("fieldsHash") || undefined;
 					let schema = store.getMeta("categorySchemaVersion") || undefined;
 					// 旧脏值校正：早期 buildLocalIndex 误存了 "local"，与 needBuild 判断的
 					// tagService.getSchemaVersion() 不一致，导致每次搜索全量重建索引 → 慢。
@@ -3312,7 +3316,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 							perIdHash = undefined;
 						}
 					}
-					this.translator.setVectorIndex({ ids, vectors, hash, model, categorySchemaVersion: schema, perIdHash });
+					this.translator.setVectorIndex({ ids, vectors, hash, model, categorySchemaVersion: schema, perIdHash, fieldsHash });
 					return;
 				}
 				// 空库：尝试从旧版文件一次性迁移
@@ -3354,6 +3358,17 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				try { oldHash = JSON.parse(oldRaw) as Record<string, string>; } catch { oldHash = null; }
 			}
 			const newHash = index.perIdHash ?? {};
+			const normalizeOptionalMeta = (value: string | null): string | undefined => value || undefined;
+			const storedModel = store.getMeta("model");
+			const storedCategorySchemaVersion = normalizeOptionalMeta(store.getMeta("categorySchemaVersion"));
+			const indexCategorySchemaVersion = normalizeOptionalMeta(index.categorySchemaVersion ?? null);
+			const vectorPayloadChanged =
+				storedModel !== index.model || storedCategorySchemaVersion !== indexCategorySchemaVersion;
+			const metadataChanged =
+				vectorPayloadChanged ||
+				store.getMeta("hash") !== index.hash ||
+				normalizeOptionalMeta(store.getMeta("fieldsHash")) !== normalizeOptionalMeta(index.fieldsHash ?? null);
+			let rowsChanged = true;
 
 			if (oldHash && Object.keys(oldHash).length > 0) {
 				// 计算差异集合
@@ -3362,14 +3377,15 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				for (let i = 0; i < index.ids.length; i++) {
 					const id = index.ids[i];
 					seen.add(id);
-					if (oldHash[id] !== newHash[id]) {
+					if (vectorPayloadChanged || oldHash[id] !== newHash[id]) {
 						changed.push({ id, vec: index.vectors[i], category: tags[i]?.[0] });
 					}
 				}
 				const removed = Object.keys(oldHash).filter((id) => !seen.has(id));
+				rowsChanged = changed.length > 0 || removed.length > 0;
+				if (!rowsChanged && !metadataChanged) return;
 				if (changed.length > 0) store.upsertMany(changed);
 				if (removed.length > 0) store.deleteMany(removed);
-				// 完全无变化：changed 与 removed 皆空 → 零写盘，仅刷新 meta
 			} else {
 				// 首次 / 无旧指纹 / 空库：退化为全量重建
 				store.replaceAll(
@@ -3377,11 +3393,14 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				);
 			}
 
-			store.setMeta("model", index.model);
-			store.setMeta("hash", index.hash);
-			if (index.categorySchemaVersion) store.setMeta("categorySchemaVersion", index.categorySchemaVersion);
-			if (index.perIdHash) store.setMeta("perIdHash", JSON.stringify(index.perIdHash));
-			await store.flush();
+			if (metadataChanged) {
+				store.setMeta("model", index.model);
+				store.setMeta("hash", index.hash);
+				store.setMeta("fieldsHash", index.fieldsHash ?? "");
+				store.setMeta("categorySchemaVersion", index.categorySchemaVersion ?? "");
+				if (index.perIdHash) store.setMeta("perIdHash", JSON.stringify(index.perIdHash));
+			}
+			if (rowsChanged || metadataChanged) await store.flush();
 		} catch (e: unknown) {
 			// 写盘失败不影响搜索功能，仅无法跨会话复用
 			logger.warn("[Chinese Plugin Market] 保存向量索引失败：", e);

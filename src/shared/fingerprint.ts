@@ -30,6 +30,9 @@ export interface FingerprintInput {
 	id: string;
 	name: string;
 	description: string;
+	/** 中文译名/译描；存在时纳入向量索引失效签名。 */
+	nameZh?: string;
+	descZh?: string;
 }
 
 /** 分类、标签和可选双语字段信息 */
@@ -107,8 +110,10 @@ export function computeIndexFingerprints<T extends FingerprintInput>(
 		}
 		fields = (fields * 33 + FIELD_SEP) | 0;
 
-		const nameZh = tagInfo?.nameZh;
-		const descZh = tagInfo?.descZh;
+		// 双语字段通常直接挂在插件条目上；tagsOf 仍保留覆盖入口，供分类服务
+		// 或其它调用方提供独立的译文来源。直接读取避免每条插件分配合并对象。
+		const nameZh = tagInfo?.nameZh ?? item.nameZh;
+		const descZh = tagInfo?.descZh ?? item.descZh;
 		if (nameZh !== undefined || descZh !== undefined) {
 			for (const value of [nameZh ?? "", descZh ?? ""]) {
 				for (let i = 0; i < value.length; i++) {

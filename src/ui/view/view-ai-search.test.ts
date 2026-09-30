@@ -48,6 +48,7 @@ vi.mock("obsidian", async () => {
 		ensureDataLoaded: vi.fn().mockResolvedValue(true),
 		renderPluginList: vi.fn(),
 		showAIConfigGuide: vi.fn(),
+		buildLocalIndex: vi.fn().mockResolvedValue(undefined),
 	} as any) as ViewContext;
 	return { ctx, settings, plugin, translator, searchInput, aiBadge };
 }
@@ -168,11 +169,13 @@ describe("runAISearch (P2-1: 从 view-data 拆离 AI 搜索编排)", () => {
 			ensureDataLoaded: vi.fn().mockResolvedValue(true),
 			renderPluginList: vi.fn(),
 			showAIConfigGuide: vi.fn(),
+			buildLocalIndex: vi.fn().mockResolvedValue(undefined),
 		} as any) as ViewContext;
 
 		await runAISearch(ctx, searchInput, aiBadge);
 		// 进度条容器已被创建（与设置页同款 <progress class="pt-index-progress">）
 		expect(field.createDiv).toHaveBeenCalled();
+		expect(ctx.buildLocalIndex).toHaveBeenCalledWith(false);
 		expect(translator.aiSearchLocal).toHaveBeenCalled();
 		expect(ctx.aiSearchResult).toEqual({ rankedIds: ["a", "b"] });
 	});

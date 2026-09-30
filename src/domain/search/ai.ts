@@ -85,6 +85,14 @@ const SLOW_LOCAL_MS = 400;
 const BATCH_SIZE = 3000;
 /** 计时计数器名：本次搜索是否重建了向量索引（1/0） */
 const COUNTER_INDEX_REBUILT = "索引重建";
+
+type SearchPlugin = {
+	id: string;
+	name: string;
+	description: string;
+	nameZh?: string;
+	descZh?: string;
+};
 /**
  * LLM 精排固定处理前 N 条候选（本地召回已给粗序，仅前 30 条进 LLM）。
  * 理由字段已设为「始终要求生成」，最大值靠 RANK_TOP_N 控制，低于 30 会报错。
@@ -365,7 +373,7 @@ export class AISearcher {
 	 */
 	async search(
 		query: string,
-		allPlugins: { id: string; name: string; description: string }[],
+		allPlugins: SearchPlugin[],
 		showReason = false,
 		onPhase?: (phase: string, detail: string) => void,
 		filterCategories?: string[],
@@ -509,7 +517,7 @@ export class AISearcher {
 	 */
 	async localSearch(
 		query: string,
-		allPlugins: { id: string; name: string; description: string }[],
+		allPlugins: SearchPlugin[],
 		filterCategories?: string[],
 	): Promise<AISearchResult> {
 		if (!allPlugins.length) throw new Error("无插件数据，请先加载列表");
@@ -619,7 +627,7 @@ export class AISearcher {
 	 */
 	private async vectorRecallScores(
 		query: string,
-		allPlugins: { id: string; name: string; description: string }[],
+		allPlugins: SearchPlugin[],
 		embCfg: NonNullable<AISearchConfig["embedding"]>,
 		timing: SearchTiming,
 		onPhase?: (phase: string, detail: string) => void,
@@ -633,6 +641,7 @@ export class AISearcher {
 			model: embCfg.model,
 			localModel: embCfg.localModel,
 			localWasmPaths: embCfg.localWasmPaths,
+			localRemoteHost: embCfg.localRemoteHost,
 		});
 
 		// 索引的 model key：本地模式用 localModel（bge），API 模式用 model。
@@ -656,31 +665,44 @@ export class AISearcher {
 
 		const indexPlugins = allPlugins.map((p) => {
 			const tag = this.pluginTags[p.id];
-			return { id: p.id, name: p.name, description: p.description, category: tag?.category, tags: tag?.tags };
+			return {
+				id: p.id,
+				name: p.name,
+				description: p.description,
+				category: tag?.category,
+				tags: tag?.tags,
+				nameZh: p.nameZh,
+				descZh: p.descZh,
+			};
 		});
 
+		const partialUsable = this.vectorIndex?.partial === true && this.vectorIndex.model === indexModel;
 		const needBuild =
 			!this.vectorIndex ||
-			this.vectorIndex.model !== indexModel ||
-			this.vectorIndex.ids.length !== allPlugins.length ||
-			this.vectorIndex.categorySchemaVersion !== this.tagService.getSchemaVersion();
+			!partialUsable && this.vectorIndex.model !== indexModel ||
+			!partialUsable && this.vectorIndex.ids.length !== allPlugins.length ||
+			!partialUsable && this.vectorIndex.categorySchemaVersion !== this.tagService.getSchemaVersion();
 
 		onPhase?.("向量召回", needBuild ? "正在构建向量索引…" : "正在计算语义相似度…");
 
 		// 索引构建与 query 编码分开计时：两者成本量级完全不同（重建要 embed 数千条，
 		// 复用只需 embed 一次 query），混在一起会把「索引没复用上」这类问题掩盖掉。
 		const prevIndex = this.vectorIndex;
-		const built = await timing.measure(PHASE.vectorIndex, () =>
-			buildVectorIndex(
-				provider,
-				indexPlugins,
-				indexModel,
-				prevIndex,
-				this.tagService.getSchemaVersion(),
-				precomputedFieldsHash,
-			)
-		);
-		this.vectorIndex = built;
+		// 后台增量构建会发布 partial 索引供搜索使用。它由唯一的后台构建任务
+		// 持续补齐，搜索不能把它当成普通旧索引再次 build，否则会并发全量 embed。
+		const built = partialUsable
+			? prevIndex!
+			: await timing.measure(PHASE.vectorIndex, () =>
+					buildVectorIndex(
+						provider,
+						indexPlugins,
+						indexModel,
+						prevIndex,
+						this.tagService.getSchemaVersion(),
+						precomputedFieldsHash,
+					)
+			  );
+		if (built !== prevIndex) this.vectorIndex = built;
 		// 用引用是否变化判断「真的重建了」——needBuild 只是快速判定，buildVectorIndex
 		// 内部还会因内容指纹变化而重建，两者不等价。
 		const rebuilt = built !== prevIndex;
