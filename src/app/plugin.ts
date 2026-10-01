@@ -403,6 +403,10 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	} = { status: "idle", loaded: 0, total: 0 };
 	/** 当前构建的 Promise（并发去重用：让多次调用共享同一次构建，而非直接 return） */
 	private buildLocalIndexPromise: Promise<void> | null = null;
+	/** 串行化 SQLite 索引保存，避免搜索保存、后台 checkpoint、卸载保存互相覆盖。 */
+	private vectorIndexSaveTail: Promise<void> = Promise.resolve();
+	/** 插件卸载时请求后台构建在当前批次后停止，避免旧实例继续跑索引。 */
+	private localIndexUnloadRequested = false;
 	/** 分类与持久化索引的启动加载顺序，避免后台构建读到半初始化状态。 */
 	private vectorIndexLoadPromise: Promise<void> | null = null;
 	private pluginTagsLoadPromise: Promise<void> | null = null;
@@ -1214,6 +1218,22 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	}
 
 	onunload() {
+		this.localIndexUnloadRequested = true;
+		if (this.indexRefreshTimer !== null) {
+			window.clearTimeout(this.indexRefreshTimer);
+			this.indexRefreshTimer = null;
+		}
+		// 退出时先把当前 partial 索引做一次最佳努力 checkpoint，再关闭 SQLite。
+		// 不能只 dispose：构建中的向量尚未走到 buildLocalIndex 末尾，原来完全不会落盘。
+		const pendingBuild = this.buildLocalIndexPromise;
+		void (async () => {
+			await this.saveVectorIndex().catch((e) =>
+				logger.warn("[Chinese Plugin Market] 卸载前保存 partial 向量索引失败：", e),
+			);
+			await pendingBuild?.catch(() => {});
+			await this.saveVectorIndex().catch(() => {});
+			await this.vectorStore?.dispose();
+		})();
 		// 卸载设置页翻译钩子并回写缓存（优先于落盘逻辑，确保缓存进入 data.json）
 		if (this.settingsTranslator) {
 			this.settingsTranslator.disable();
@@ -1243,8 +1263,6 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		}
 		// 关闭所有翻译视图
 		this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((leaf) => leaf.detach());
-		// 释放 SQLite 向量库（会冲刷未落盘的变更）
-		void this.vectorStore?.dispose();
 	}
 
 	/** 打开翻译视图 */
@@ -3127,6 +3145,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	 * 进度写到 this.localIndexState，供设置页/视图轮询展示。
 	 */
 	async buildLocalIndex(force = false): Promise<void> {
+		if (this.localIndexUnloadRequested) return;
 		// 并发去重：复用同一次构建的 Promise，让重复调用等待结果而非直接 return（#26）
 		if (this.buildLocalIndexPromise) {
 			return this.buildLocalIndexPromise;
@@ -3175,6 +3194,9 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			const provider: EmbeddingProvider = {
 				name: "local-progress",
 				embed: async (texts) => {
+					if (this.localIndexUnloadRequested) {
+						throw new Error("本地向量索引构建因插件卸载而停止");
+					}
 					// 懒进状态：no-op 增量维护（fieldsHash 命中、零 embed）不该让 UI 闪「构建中」
 					if (this.localIndexState.status !== "building") {
 						this.localIndexState = { status: "building", progress: 0, total };
@@ -3225,11 +3247,16 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			}
 			const partialIds: string[] = [];
 			const partialVecs: (number[] | Float32Array)[] = [];
+			const partialPos = new Map<string, number>();
+			const partialHashes: Record<string, string> = {};
 			for (const p of indexPlugins) {
 				const v = prevVecById.get(p.id);
 				if (v) {
+					partialPos.set(p.id, partialIds.length);
 					partialIds.push(p.id);
 					partialVecs.push(v);
+					const hash = prevIdx?.perIdHash?.[p.id];
+					if (hash) partialHashes[p.id] = hash;
 				}
 			}
 			const publish = () => {
@@ -3239,20 +3266,45 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 					hash: "",
 					model,
 					categorySchemaVersion: schemaVer,
+					perIdHash: { ...partialHashes },
 					partial: true,
 				});
 			};
 			publish();
+			const CHECKPOINT_INTERVAL = 512;
+			let checkpointAt = partialIds.length;
+			let checkpointTail = Promise.resolve();
+			const scheduleCheckpoint = () => {
+				if (partialIds.length - checkpointAt < CHECKPOINT_INTERVAL) return;
+				checkpointAt = partialIds.length;
+				checkpointTail = checkpointTail
+					.then(() => this.saveVectorIndex())
+					.catch((e) => logger.warn("[Chinese Plugin Market] partial 向量索引 checkpoint 失败：", e));
+			};
 			const index = await buildVectorIndex(provider, indexPlugins, model, prevIdx, schemaVer, {
 				chunk: 128,
-				onPartial: (updates) => {
+				onPartial: (updates, hashes) => {
 					for (const [id, v] of updates) {
-						partialIds.push(id);
-						partialVecs.push(v);
+						const pos = partialPos.get(id);
+						if (pos === undefined) {
+							partialPos.set(id, partialIds.length);
+							partialIds.push(id);
+							partialVecs.push(v);
+						} else {
+							partialVecs[pos] = v;
+						}
+						const hash = hashes.get(id);
+						if (hash) partialHashes[id] = hash;
 					}
 					publish();
+					if (this.localIndexUnloadRequested) {
+						throw new Error("本地向量索引构建因插件卸载而停止");
+					}
+					scheduleCheckpoint();
 				},
 			});
+			await checkpointTail;
+			if (this.localIndexUnloadRequested) return;
 			this.translator.setVectorIndex(index);
 			await this.saveVectorIndex();
 			done("done");
@@ -3343,7 +3395,8 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 							perIdHash = undefined;
 						}
 					}
-					this.translator.setVectorIndex({ ids, vectors, hash, model, categorySchemaVersion: schema, perIdHash, fieldsHash });
+					const partial = store.getMeta("partial") === "1";
+					this.translator.setVectorIndex({ ids, vectors, hash, model, categorySchemaVersion: schema, perIdHash, fieldsHash, partial });
 					return;
 				}
 				// 空库：尝试从旧版文件一次性迁移
@@ -3368,6 +3421,12 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	}
 
 	async saveVectorIndex() {
+		const save = this.vectorIndexSaveTail.then(() => this.persistVectorIndex());
+		this.vectorIndexSaveTail = save.catch(() => {});
+		return save;
+	}
+
+	private async persistVectorIndex() {
 		const index = this.translator.getVectorIndex();
 		if (!index || index.ids.length === 0) return; // 无索引不写盘
 		try {
@@ -3384,17 +3443,24 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			if (oldRaw) {
 				try { oldHash = JSON.parse(oldRaw) as Record<string, string>; } catch { oldHash = null; }
 			}
-			const newHash = index.perIdHash ?? {};
 			const normalizeOptionalMeta = (value: string | null): string | undefined => value || undefined;
 			const storedModel = store.getMeta("model");
 			const storedCategorySchemaVersion = normalizeOptionalMeta(store.getMeta("categorySchemaVersion"));
 			const indexCategorySchemaVersion = normalizeOptionalMeta(index.categorySchemaVersion ?? null);
+			const storedPartial = store.getMeta("partial") === "1";
+			const indexPartial = index.partial === true;
+			const newHash = index.perIdHash ?? {};
+			// partial 只覆盖已完成的行，但要保留旧完整索引的指纹；这样最终切回
+			// full 时仍能识别并删除旧索引里已经不存在的插件。
+			const persistedHash = indexPartial && oldHash ? { ...oldHash, ...newHash } : newHash;
+			const partialStarted = indexPartial && !storedPartial;
 			const vectorPayloadChanged =
 				storedModel !== index.model || storedCategorySchemaVersion !== indexCategorySchemaVersion;
 			const metadataChanged =
 				vectorPayloadChanged ||
 				store.getMeta("hash") !== index.hash ||
-				normalizeOptionalMeta(store.getMeta("fieldsHash")) !== normalizeOptionalMeta(index.fieldsHash ?? null);
+				normalizeOptionalMeta(store.getMeta("fieldsHash")) !== normalizeOptionalMeta(index.fieldsHash ?? null) ||
+				storedPartial !== indexPartial;
 			let rowsChanged = true;
 
 			if (oldHash && Object.keys(oldHash).length > 0) {
@@ -3404,20 +3470,23 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				for (let i = 0; i < index.ids.length; i++) {
 					const id = index.ids[i];
 					seen.add(id);
-					if (vectorPayloadChanged || oldHash[id] !== newHash[id]) {
+					if (vectorPayloadChanged || partialStarted || oldHash[id] !== newHash[id]) {
 						changed.push({ id, vec: index.vectors[i], category: tags[i]?.[0] });
 					}
 				}
-				const removed = Object.keys(oldHash).filter((id) => !seen.has(id));
+				// partial 索引只代表“目前已完成的子集”，不能把上一次完整索引中
+				// 尚未重新生成的行当作已删除，否则退出/重启 checkpoint 会反而丢数据。
+				const removed = indexPartial ? [] : Object.keys(oldHash).filter((id) => !seen.has(id));
 				rowsChanged = changed.length > 0 || removed.length > 0;
 				if (!rowsChanged && !metadataChanged) return;
 				if (changed.length > 0) store.upsertMany(changed);
 				if (removed.length > 0) store.deleteMany(removed);
 			} else {
-				// 首次 / 无旧指纹 / 空库：退化为全量重建
-				store.replaceAll(
-					index.ids.map((id, i) => ({ id, vec: index.vectors[i], category: tags[i]?.[0] }))
-				);
+				// 首次 / 无旧指纹 / 空库：完整索引退化为全量重建；partial 只能增量写入，
+				// 以免清空可用于恢复的旧行。
+				const rows = index.ids.map((id, i) => ({ id, vec: index.vectors[i], category: tags[i]?.[0] }));
+				if (indexPartial) store.upsertMany(rows);
+				else store.replaceAll(rows);
 			}
 
 			if (metadataChanged) {
@@ -3425,7 +3494,8 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				store.setMeta("hash", index.hash);
 				store.setMeta("fieldsHash", index.fieldsHash ?? "");
 				store.setMeta("categorySchemaVersion", index.categorySchemaVersion ?? "");
-				if (index.perIdHash) store.setMeta("perIdHash", JSON.stringify(index.perIdHash));
+				store.setMeta("partial", indexPartial ? "1" : "0");
+				if (index.perIdHash) store.setMeta("perIdHash", JSON.stringify(persistedHash));
 			}
 			if (rowsChanged || metadataChanged) await store.flush();
 		} catch (e: unknown) {
