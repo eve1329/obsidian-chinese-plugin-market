@@ -2981,6 +2981,8 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 					new Uint8Array(ab).set(bytes);
 					await adapter.writeBinary(p, ab);
 				},
+				// 盘上向量库损坏自愈：删除损坏文件后由 open 以空库重建
+				delete: (p) => adapter.remove(p),
 			};
 			const tOpen = Date.now();
 			this.vectorStore = await SqliteVectorStore.open(persist, this.vectorStoreFilePath, sql);

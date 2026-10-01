@@ -43,6 +43,18 @@ interface TransmartResponse {
 	auto_translation?: string;
 }
 
+/** 源语言不被腾讯翻译（免费）支持（接口返回 Unsupported-Language）。
+ *  属可预期的「跳过」条件（如日/韩/德/法等 README 段），非网络/限流故障，
+ *  应优雅降级保留原文，不记熔断、不打 warn。 */
+export class UnsupportedLanguageError extends Error {
+	readonly lang?: string;
+	constructor(lang?: string) {
+		super(`腾讯翻译（免费）不支持该源语言${lang ? `: ${lang}` : ""}`);
+		this.name = "UnsupportedLanguageError";
+		this.lang = lang;
+	}
+}
+
 /** 单段翻译结果：text 为译文（unchanged 时为原文）；unchanged 表示腾讯原样返回（无需翻译） */
 interface BlockResult {
 	text: string;
@@ -112,6 +124,11 @@ export class TransmartClient {
 				provider: "tencent-transmart",
 			};
 		} catch (e: unknown) {
+			// 源语言不被腾讯免费版支持（如日/韩等）→ 交由上层 fallback 链，不计熔断、不打 warn
+			if (e instanceof UnsupportedLanguageError) {
+				logger.debug("[Chinese Plugin Market] 腾讯翻译（免费）源语言不支持，走 fallback:", e.lang);
+				return null;
+			}
 			const msg = e instanceof Error ? e.message : String(e);
 			// 纯「无需翻译/回显」是正常兜底路径（同 Google 的「未变化」）：不记熔断、不打 warn
 			if (msg.includes("原文回显")) return null;
@@ -147,9 +164,18 @@ export class TransmartClient {
 		if (!text || !text.trim()) return text;
 		const srcLang = await this.detectLanguage(text);
 		if (srcLang === "zh") return text;
-		const r = await this.translateText(text, srcLang);
-		this.netBreaker.recordSuccess();
-		return r.text;
+		try {
+			const r = await this.translateText(text, srcLang);
+			this.netBreaker.recordSuccess();
+			return r.text;
+		} catch (e: unknown) {
+			// 该源语言腾讯免费版不支持（如日/韩/德/法…）→ 优雅保留原文段，不报错、不熔断、不打 warn
+			if (e instanceof UnsupportedLanguageError) {
+				logger.debug("[Chinese Plugin Market] 腾讯翻译（免费）源语言不支持，保留原文段:", e.lang);
+				return text;
+			}
+			throw e;
+		}
 	}
 
 	/**
@@ -178,6 +204,8 @@ export class TransmartClient {
 			this.netBreaker.recordSuccess();
 			return lines;
 		} catch (e: unknown) {
+			// 批量含不支持语言 → 降级为逐条翻译（正确性优先），不计熔断
+			if (e instanceof UnsupportedLanguageError) return null;
 			this.netBreaker.recordFailure(isFatalError(e));
 			logger.warn("[Chinese Plugin Market] 腾讯翻译（免费）批量分段失败:", e);
 			return null;
@@ -237,6 +265,12 @@ export class TransmartClient {
 			if (code === "busy" && attempt < RETRY_BUSY) {
 				await new Promise((r) => window.setTimeout(r, 600 * (attempt + 1)));
 				continue;
+			}
+			// Unsupported-Language：源语言腾讯免费版不支持（如日/韩/德/法等），属「源语言不匹配」
+			// 而非网络/限流故障，应优雅降级（保留原文段），不计熔断、不告警。
+			if (code === "Unsupported-Language") {
+				const lang = (body.source as { lang?: string } | undefined)?.lang;
+				throw new UnsupportedLanguageError(lang);
 			}
 			throw new Error(`腾讯翻译（免费）API 错误: ${code ?? "unknown"}`);
 		}

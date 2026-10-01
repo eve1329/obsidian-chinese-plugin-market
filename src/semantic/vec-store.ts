@@ -23,6 +23,8 @@ export interface PersistAdapter {
 	exists(path: string): Promise<boolean>;
 	read(path: string): Promise<Uint8Array>;
 	write(path: string, bytes: Uint8Array): Promise<void>;
+	/** 删除文件（可选；盘上库损坏自愈需要）。不提供时不执行自愈。 */
+	delete?(path: string): Promise<void>;
 }
 
 /** 写入的插件向量行 */
@@ -67,8 +69,26 @@ export class SqliteVectorStore {
 	): Promise<SqliteVectorStore> {
 		const store = new SqliteVectorStore(adapter, dbPath);
 		const bytes = (await adapter.exists(dbPath)) ? await adapter.read(dbPath) : null;
-		store.db = bytes && bytes.length > 0 ? new sql.Database(bytes) : new sql.Database();
-		store.applySchema();
+		try {
+			// 注意：sql.js 构造 DB 对象时惰性解析，损坏常在执行首条 SQL（applySchema）时
+			// 才暴露（如 "file is not a database" / "database disk image is malformed"），
+			// 故需把 applySchema 一并纳入 try。
+			store.db = bytes && bytes.length > 0 ? new sql.Database(bytes) : new sql.Database();
+			store.applySchema();
+		} catch (e: unknown) {
+			const msg = (e as Error)?.message || String(e);
+			// 盘上文件损坏：删除后以空库重建，当次会话的索引重建会经 saveVectorIndex
+			// 重新落盘，而非永久降级内存索引。
+			if (bytes && bytes.length > 0 && adapter.delete &&
+				/malformed|not a database|disk image/i.test(msg)) {
+				logger.warn(`[Chinese Plugin Market] 向量库文件损坏，删除后重建空库: ${dbPath}`);
+				try { await adapter.delete(dbPath); } catch { /* 删除失败则保留原错误 */ }
+				store.db = new sql.Database();
+				store.applySchema();
+			} else {
+				throw e;
+			}
+		}
 		return store;
 	}
 

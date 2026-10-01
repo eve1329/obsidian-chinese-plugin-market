@@ -308,8 +308,14 @@ export function embeddingIndexKey(cfg: {
 	localModel?: string;
 }): string {
 	if (cfg.source === "local") {
-		const m = cfg.localModel ?? "";
-		return m ? `local|${m}` : "local";
+		// 空 localModel 一律归一到 DEFAULT_LOCAL_MODEL。原因：构建侧（plugin.buildLocalIndex）
+		// 用 `settings.embeddingLocalModel || DEFAULT_LOCAL_MODEL` 兜底，而搜索侧（AISearcher）
+		// 直接透传 settings.embeddingLocalModel（用户清空时为空串）。若此处不兜底，两条路径会
+		// 算出不同 key（构建侧 `local|Xenova/...` vs 搜索侧裸 `local`）→ 索引在「构建写 A key /
+		// 搜索期待 B key」之间振荡：每次重启 buildLocalIndex 全量重建、首搜又因 model 不符再全量重建。
+		// 收敛到单一事实来源，杜绝这类「每隔一次操作就整体重建」的灾难（embeddingIndexKey 注释已警示）。
+		const m = cfg.localModel?.trim() || DEFAULT_LOCAL_MODEL;
+		return `local|${m}`;
 	}
 	const m = cfg.model ?? "";
 	const base = (cfg.baseURL ?? "").trim().replace(/\/+$/, "");

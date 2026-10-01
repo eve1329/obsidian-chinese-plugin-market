@@ -183,4 +183,44 @@ describe("SqliteVectorStore", () => {
 		expect(s2.getAllVecs().get("w1")![1]).toBeCloseTo(1);
 		await s2.dispose();
 	});
+
+	it("open：盘上文件损坏（malformed）→ 删除后以空库重建，可重新写盘", async () => {
+		// 复现：同步中断导致 vector-index.sqlite 半截损坏，open 抛 database disk image is malformed。
+		// 期望自愈：删除损坏文件、以空库重建（当次会话 saveVectorIndex 会重新落盘），而非永久降级。
+		let data: Uint8Array | null = null;
+		let deleted = false;
+		const adapter: PersistAdapter = {
+			exists: async () => data !== null,
+			read: async () => data!,
+			write: async (_p, b) => { data = b; },
+			delete: async (_p) => { data = null; deleted = true; },
+		};
+
+		// 1) 先造一份合法库并落盘
+		let s = await SqliteVectorStore.open(adapter, file, SQL as any);
+		s.replaceAll([{ id: "x", vec: [0.2, 0.8] }]);
+		await s.flush();
+		await s.dispose();
+		expect(data).not.toBeNull();
+
+		// 2) 截成半截（头不完整）→ 模拟损坏文件
+		const truncated = data!.subarray(0, 10);
+		data = truncated;
+		expect(truncated.length).toBeLessThan(16);
+
+		// 3) 带 delete 的适配器打开 → 自愈：删文件、建空库
+		const store = await SqliteVectorStore.open(adapter, file, SQL as any);
+		expect(deleted).toBe(true);   // 损坏文件已被删除
+		expect(store.count()).toBe(0); // 重建为空库
+
+		// 4) 当次会话重建并落盘后，可重新打开读取
+		store.replaceAll([{ id: "a", vec: [1, 0, 0] }]);
+		await store.flush();
+		await store.dispose();
+
+		const reopened = await SqliteVectorStore.open(adapter, file, SQL as any);
+		expect(reopened.count()).toBe(1);
+		expect(reopened.getAllVecs().has("a")).toBe(true);
+		await reopened.dispose();
+	});
 });

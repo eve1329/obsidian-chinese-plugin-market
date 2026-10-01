@@ -101,4 +101,40 @@ describe("TransmartClient · 质量校验", () => {
 
 		expect(result).toBe("Templater");
 	});
+
+	it("translateSegment：源语言不支持（Unsupported-Language）→ 优雅保留原文段，不抛错", async () => {
+		// 复现 README 分段失败刷屏：日文段被检测为 ja，腾讯免费版不支持 → 返回原文而非抛错。
+		req.mockResolvedValueOnce(okJson({ header: { ret_code: "succ" }, language: "ja" }));
+		req.mockResolvedValueOnce(
+			okJson({ header: { ret_code: "Unsupported-Language" } })
+		);
+
+		const client = new TransmartClient("test-ua");
+		const result = await client.translateSegment("これは日本語のドキュメントです");
+
+		expect(result).toBe("これは日本語のドキュメントです");
+		// 不计熔断：available 保持 true
+		expect(client.isAvailable()).toBe(true);
+	});
+
+	it("translate：name 源语言不支持（Unsupported-Language）→ 返回 null 走 fallback，且不计熔断", async () => {
+		// 日文 name 触发 Unsupported-Language；应优雅降级而非累计 recordFailure 开路。
+		req.mockResolvedValueOnce(okJson({ header: { ret_code: "succ" }, language: "ja" }));
+		req.mockResolvedValueOnce(
+			okJson({ header: { ret_code: "Unsupported-Language" } })
+		);
+
+		const client = new TransmartClient("test-ua");
+		const result = await client.translate({ ...plugin, name: "日本語プラグイン", description: "" });
+
+		expect(result).toBeNull();
+		// 关键回归：Unsupported-Language 不算故障，连续多次不应开路
+		req.mockResolvedValueOnce(okJson({ header: { ret_code: "succ" }, language: "ja" }));
+		req.mockResolvedValueOnce(okJson({ header: { ret_code: "Unsupported-Language" } }));
+		await client.translate({ ...plugin, name: "別の日本語名", description: "" });
+		req.mockResolvedValueOnce(okJson({ header: { ret_code: "succ" }, language: "ja" }));
+		req.mockResolvedValueOnce(okJson({ header: { ret_code: "Unsupported-Language" } }));
+		await client.translate({ ...plugin, name: "三つ目の日本語名", description: "" });
+		expect(client.isAvailable()).toBe(true);
+	});
 });

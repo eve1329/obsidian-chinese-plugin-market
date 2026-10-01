@@ -45,6 +45,38 @@ function makeSearcher(embeddingSource: "keyword" | "local" = "keyword") {
 	return { searcher, llm };
 }
 
+describe("BM25 索引缓存 · 首搜一次性构建，后续命中", () => {
+	it("首次 getBm25Index 全量分词构建，第二次返回同一实例（零重建）", () => {
+		const { searcher } = makeSearcher();
+		// 2000 条模拟真实语料规模，验证缓存语义（非精确计时）
+		const plugins = Array.from({ length: 2000 }, (_, i) => ({
+			id: `p${i}`,
+			name: `Plugin ${i}`,
+			description: `A plugin for task ${i} management, sync and notes organization`,
+		}));
+		const t0 = Date.now();
+		const idx1 = searcher.getBm25Index(plugins);
+		const buildMs = Date.now() - t0;
+		const t1 = Date.now();
+		const idx2 = searcher.getBm25Index(plugins); // 同内容 → 应命中缓存
+		const reuseMs = Date.now() - t1;
+
+		expect(idx2).toBe(idx1); // 同一实例，未二次构建
+		expect(reuseMs).toBeLessThan(buildMs); // 复用远快于首次构建
+		expect(idx1.sig).toBe(idx1.sig);
+	});
+
+	it("内容变化（描述变更）触发失效重建，内容不变则零重建", () => {
+		const { searcher } = makeSearcher();
+		const base = (d: string) => [{ id: "a", name: "A", description: d }];
+		const idx1 = searcher.getBm25Index(base("hello world"));
+		const idx2 = searcher.getBm25Index(base("hello world")); // 同内容
+		expect(idx2).toBe(idx1);
+		const idx3 = searcher.getBm25Index(base("hello obsidian")); // 描述变了
+		expect(idx3).not.toBe(idx1);
+	});
+});
+
 describe("AISearcher 降级健壮性", () => {
 	beforeEach(() => {
 		req.mockReset();

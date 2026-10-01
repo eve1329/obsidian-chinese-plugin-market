@@ -677,11 +677,19 @@ export class AISearcher {
 		});
 
 		const partialUsable = this.vectorIndex?.partial === true && this.vectorIndex.model === indexModel;
-		const needBuild =
-			!this.vectorIndex ||
-			!partialUsable && this.vectorIndex.model !== indexModel ||
-			!partialUsable && this.vectorIndex.ids.length !== allPlugins.length ||
-			!partialUsable && this.vectorIndex.categorySchemaVersion !== this.tagService.getSchemaVersion();
+		const nullIdx = !this.vectorIndex;
+		const modelMismatch = !partialUsable && this.vectorIndex?.model !== indexModel;
+		const lenMismatch = !partialUsable && this.vectorIndex?.ids.length !== allPlugins.length;
+		const schemaMismatch = !partialUsable && this.vectorIndex?.categorySchemaVersion !== this.tagService.getSchemaVersion();
+		const needBuild = nullIdx || modelMismatch || lenMismatch || schemaMismatch;
+
+		if (needBuild) {
+			// 诊断：把四个复用判定条件摊开，重启后仍全量重建时可直接看出是哪一个不满足
+			// （常见：模型 key 两侧不一致 → modelMismatch；或落盘索引未恢复 → nullIdx）。
+			logger.debug(
+				`[Chinese Plugin Market] 向量索引需重建：null=${nullIdx} · model=${modelMismatch}(落盘=${this.vectorIndex?.model}≠计算=${indexModel}) · len=${lenMismatch}(${this.vectorIndex?.ids.length}/${allPlugins.length}) · schema=${schemaMismatch}(${this.vectorIndex?.categorySchemaVersion}≠${this.tagService.getSchemaVersion()})`
+			);
+		}
 
 		onPhase?.("向量召回", needBuild ? "正在构建向量索引…" : "正在计算语义相似度…");
 

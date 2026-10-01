@@ -18,6 +18,27 @@ import { buildSearchBlob } from "@domain/filter/filter";
 import { renderFacetChips } from "@ui/components/facet-chips";
 import { groupAuthorsByName } from "@translation/lexicon/pinyin-init";
 import { setListState } from "@ui/dom/list-state";
+
+/**
+ * 预热 BM25 关键词召回索引：数据就绪后在空闲时段后台构建（让出当前渲染帧，不阻塞首屏绘制）。
+ * 使首次语义搜索直接命中缓存，不再出现「本地检索阶段偏慢（关键词召回 600ms+）」告警。
+ *
+ * BM25 索引指纹只依赖 id/name/description，与分类标签无关，故可在插件列表落定后立即预热，
+ * 无需等待 setPluginTags。构建为一次性成本；已构建时 getBm25Index 直接返回缓存实例（零重建）。
+ * 预热失败不致命：首次搜索会照常惰性构建，仅是回退到旧行为。
+ */
+function scheduleBm25Warmup(ctx: ViewContext): void {
+	const plugins = ctx.plugins;
+	if (!plugins || plugins.length === 0) return;
+	// 让出当前渲染帧，避免阻塞数据就绪后的首屏绘制
+	window.setTimeout(() => {
+		try {
+			ctx.translator.aiSearcher.getBm25Index(plugins);
+		} catch {
+			// 预热失败不致命：首次搜索照常惰性构建
+		}
+	}, 0);
+}
 import { isAIMode } from "@domain/search/search-mode";
 
 import type { ViewContext } from "@ui/view/view-context";
@@ -158,6 +179,8 @@ export async function ensureDataLoaded(ctx: ViewContext) : Promise<boolean> {
 		void ctx.savePluginListCache(data);
 		ctx.plugins = data;
 		ctx.buildAuthorFacet();
+		// BM25 关键词召回索引预热（后台，首次搜索命中缓存、不再首搜 600ms 构建）
+		scheduleBm25Warmup(ctx);
 		// 动态向量索引：列表更新后防抖触发后台增量重建（只 embed 新增/变化条目）
 		ctx.plugin.scheduleIndexRefresh("列表更新");
 		// 拉取成功：更新列表拉取时间戳（用于 TTL 判断）。
@@ -295,6 +318,8 @@ export async function ensureDataLoaded(ctx: ViewContext) : Promise<boolean> {
 			if (cachedData && cachedData.length > 0) {
 				ctx.plugins = cachedData;
 				ctx.buildAuthorFacet();
+				// BM25 关键词召回索引预热（后台，离线缓存恢复路径同样覆盖）
+				scheduleBm25Warmup(ctx);
 			ctx.applyAIConfig();
 			if (progressHint) progressHint.textContent = "（使用本地缓存）";
 			logger.warn("[Chinese Plugin Market] 网络不可用，已从本地缓存恢复插件列表（%d 个）。", cachedData.length);
@@ -422,6 +447,8 @@ export async function refreshData(ctx: ViewContext) : Promise<void> {
 			const data = await ctx.fetchPlugins();
 			ctx.plugins = data;
 			ctx.buildAuthorFacet();
+			// BM25 关键词召回索引预热（后台，手动刷新路径同样覆盖）
+			scheduleBm25Warmup(ctx);
 			// 动态向量索引：手动刷新列表后同样防抖触发增量重建
 			ctx.plugin.scheduleIndexRefresh("手动刷新列表");
 	
