@@ -159,6 +159,52 @@ describe("Plugin 持久化契约（P0 回归）", () => {
 		expect(flush).toHaveBeenCalledTimes(1);
 	});
 
+	it("partial checkpoint 不删除旧索引，并持久化可恢复元数据", async () => {
+		const { plugin } = makePlugin();
+		const index = {
+			ids: ["plugin-a"],
+			vectors: [[0, 1]],
+			hash: "",
+			model: "local:test",
+			categorySchemaVersion: "schema-a",
+			perIdHash: { "plugin-a": "row-a" },
+			partial: true,
+		};
+		plugin.translator.setVectorIndex(index);
+		const storedMeta: Record<string, string> = {
+			model: index.model,
+			hash: "complete-hash",
+			fieldsHash: "complete-fields",
+			categorySchemaVersion: index.categorySchemaVersion,
+			perIdHash: JSON.stringify({ "plugin-a": "old-a", "plugin-b": "old-b" }),
+			partial: "0",
+		};
+		const upsertMany = vi.fn();
+		const deleteMany = vi.fn();
+		const setMeta = vi.fn();
+		const flush = vi.fn(async () => {});
+		const store = {
+			getMeta: (key: string) => storedMeta[key] ?? null,
+			upsertMany,
+			deleteMany,
+			replaceAll: vi.fn(),
+			setMeta,
+			flush,
+		};
+		Object.assign(plugin as any, { vectorStore: store });
+
+		await plugin.saveVectorIndex();
+
+		expect(upsertMany).toHaveBeenCalledWith([{ id: "plugin-a", vec: [0, 1], category: undefined }]);
+		expect(deleteMany).not.toHaveBeenCalled();
+		expect(setMeta).toHaveBeenCalledWith("partial", "1");
+		expect(setMeta).toHaveBeenCalledWith(
+			"perIdHash",
+			JSON.stringify({ "plugin-a": "row-a", "plugin-b": "old-b" }),
+		);
+		expect(flush).toHaveBeenCalledTimes(1);
+	});
+
 	it("收藏筛选（favoriteFilter）改为会话级：不再持久化进 settings", async () => {
 		const { plugin, saveData } = makePlugin();
 		// 旧版 data.json 残留 favoriteFilter（boolean 或枚举）→ 加载后被丢弃，不回落到 settings

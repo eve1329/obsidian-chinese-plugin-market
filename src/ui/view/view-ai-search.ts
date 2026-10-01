@@ -118,13 +118,14 @@ export async function runAISearch(
 			? window.setInterval(() => updateLocalModelProgressBar(modelBar!, ctx.plugin.localModelState, aiBadge), 150)
 			: 0;
 
-		// 本地索引统一由插件级构建任务维护。先等待它（若已在后台构建则复用同一
-		// Promise），避免 AISearcher 在同一批数据上再启动一轮独立 embed。
+		// 本地索引统一由插件级构建任务维护。没有任何索引时先等待首个完整构建，
+		// 避免 AISearcher 在同一批数据上再启动一轮独立 embed；已有 partial 时不再
+		// 等整库构建结束，直接用当前已完成向量 + 关键词召回，避免进度条增长期间搜索看似卡死。
 		// API embedding 不走这条后台本地索引路径。
 		const currentVectorIndex = ctx.translator.getVectorIndex?.();
 		if (
 			settings.embeddingSource === "local" &&
-			(!currentVectorIndex || currentVectorIndex.partial || currentVectorIndex.ids.length !== ctx.plugins.length)
+			(!currentVectorIndex || (!currentVectorIndex.partial && currentVectorIndex.ids.length !== ctx.plugins.length))
 		) {
 			await ctx.buildLocalIndex(false);
 		}

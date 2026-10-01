@@ -421,8 +421,11 @@ export interface IndexPlugin {
 
 /** 动态构建向量索引时的可选发布配置。 */
 export interface VectorBuildOptions {
-	/** 动态全量构建：每 embed 完一片即回调（id→向量），供调用方实时发布部分索引。 */
-	onPartial?: (updates: Map<string, number[] | Float32Array>) => void;
+	/** 动态全量构建：每 embed 完一片即回调（id→向量+内容指纹），供调用方实时发布/持久化部分索引。 */
+	onPartial?: (
+		updates: Map<string, number[] | Float32Array>,
+		perIdHash: Map<string, string>,
+	) => void;
 	/** 分片大小（默认 256）。 */
 	chunk?: number;
 }
@@ -554,12 +557,15 @@ export async function buildVectorIndex(
 			const slice = needEmbed.slice(s, s + CHUNK);
 			const newVecs = await provider.embed(slice.map((i) => texts[i]));
 			const updates = new Map<string, number[] | Float32Array>();
+			const partialHashes = new Map<string, string>();
 			for (let k = 0; k < slice.length; k++) {
 				const v = Float32Array.from(normalizeVector(newVecs[k]));
 				vectors[slice[k]] = v;
-				updates.set(plugins[slice[k]].id, v);
+				const id = plugins[slice[k]].id;
+				updates.set(id, v);
+				partialHashes.set(id, perIdHash[id]);
 			}
-			buildOpts?.onPartial?.(updates);
+			buildOpts?.onPartial?.(updates, partialHashes);
 		}
 	}
 
