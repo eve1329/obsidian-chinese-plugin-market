@@ -1155,9 +1155,9 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		// 后台异步加载插件分类索引（不阻塞视图启动，加载完成后同步更新 pluginTagMap）
 		// 向量索引必须在分类加载完成后恢复：分类字段参与 embedding 文本，
 		// 否则启动早期后台构建会先写一份「无分类」索引，首搜再因 fieldsHash 变化重建。
-		this.pluginTagsLoadPromise = this.loadPluginTags();
-		this.vectorIndexLoadPromise = this.pluginTagsLoadPromise.then(() => this.loadVectorIndex());
-		void this.vectorIndexLoadPromise.then(() => this.refreshOpenViews());
+		// 复用 ensureVectorIndexLoaded()：若 buildLocalIndex 已提前触发过加载，此处直接
+		// 复用同一个 Promise，避免 loadPluginTags / loadVectorIndex 被重复执行一遍。
+		void this.ensureVectorIndexLoaded().then(() => this.refreshOpenViews());
 		// 注：本地 embedding 预热已在上方并行启动，无需在此再次触发。
 		// 后台异步加载插件上线日期索引（「上线」维度用，不阻塞视图启动）
 		this.loadReleaseDates().catch((e) =>
@@ -3094,6 +3094,30 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	}
 
 	/**
+	 * 保证「分类 → 向量索引」的启动加载 Promise 已存在，并返回它（幂等）。
+	 *
+	 * 存在意义（修复「每次重启 Obsidian 都全量重建索引」）：
+	 * `vectorIndexLoadPromise` 原先只在 `onLayoutReady → initDeferredLoad` 里赋值，且排在
+	 * 若干 await（TM 回灌等，注释称最长 2000ms）之后；而 `buildLocalIndex` 由「数据就绪」
+	 * 回调在视图 onOpen 时无条件触发，几乎总是早于该赋值。此时
+	 * `await this.vectorIndexLoadPromise` 等价于 `await null` —— 瞬间通过，`prevIdx` 为空，
+	 * 于是把本可复用的落盘索引丢掉、全量重 embed；随后 `loadVectorIndex` 完成又把落盘索引
+	 * 覆盖回来，这一遍全量构建纯属白做，且每次重启稳定复现。
+	 *
+	 * 本方法幂等：谁先调用谁触发加载，另一方复用同一个 Promise，不会重复加载。
+	 * 分类必须先于向量索引恢复（分类字段参与 embedding 文本），顺序在此固定。
+	 */
+	private ensureVectorIndexLoaded(): Promise<void> {
+		if (!this.pluginTagsLoadPromise) {
+			this.pluginTagsLoadPromise = this.loadPluginTags();
+		}
+		if (!this.vectorIndexLoadPromise) {
+			this.vectorIndexLoadPromise = this.pluginTagsLoadPromise.then(() => this.loadVectorIndex());
+		}
+		return this.vectorIndexLoadPromise;
+	}
+
+	/**
 	 * 后台预建本地向量索引（A+B：设置页手动 / 数据就绪后自动共用）。
 	 *
 	 * 用本地 bge 模型对当前插件列表 embed → 构建 VectorIndex（含分类注入）→
@@ -3137,9 +3161,10 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 
 		const run = async (): Promise<void> => {
 		try {
-			// loadVectorIndex 在 onLayoutReady 后异步执行；若不等待，下面的
-			// prevIdx 可能为空并触发一次完整构建，随后又被落盘索引覆盖，形成重复构建。
-			await this.vectorIndexLoadPromise;
+			// 必须走 ensureVectorIndexLoaded()：直接 await 可能为 null 的
+			// vectorIndexLoadPromise 会瞬间通过（见该方法注释）→ prevIdx 为空 →
+			// 丢掉落盘索引、每次重启全量重建。该方法保证 Promise 一定存在且已等待完成。
+			await this.ensureVectorIndexLoaded();
 			const base = new LocalEmbeddingProvider(undefined, localModelName, this.settings.embeddingLocalWasmPaths || undefined, this.settings.embeddingRemoteHost || undefined);
 			// 时间片渐进构建（对齐 vault-curate 的 buildBM25Sliced）：每批 embed 后
 			// yield 一次主线程，让 UI 能重绘并实时显示进度，避免一次性大任务冻结界面。

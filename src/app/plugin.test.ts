@@ -315,5 +315,68 @@ describe("Plugin 持久化契约（P0 回归）", () => {
 		const cache2 = (plugin as any).translator.cache as Record<string, any>;
 		expect(cache2["seed-1"].translatedName).toBe("用户校正甲"); // 用户覆盖种子
 		expect(cache2["seed-2"].translatedName).toBe("种子乙"); // 种子补充用户缺失项
-	});
-});
+		});
+		});
+
+		describe("启动期向量索引加载竞态（每次重启都全量重建的回归）", () => {
+		it("ensureVectorIndexLoaded 在无启动 Promise 时自行触发加载，且幂等、分类先于索引", async () => {
+			const { plugin } = makePlugin();
+			// 模拟「onLayoutReady 尚未执行」：两个启动加载 Promise 都还是 null
+			expect((plugin as any).vectorIndexLoadPromise).toBeNull();
+			expect((plugin as any).pluginTagsLoadPromise).toBeNull();
+
+			const order: string[] = [];
+			const loadTags = vi.spyOn(plugin as any, "loadPluginTags").mockImplementation(async () => {
+				order.push("tags");
+			});
+			const loadVec = vi.spyOn(plugin, "loadVectorIndex").mockImplementation(async () => {
+				order.push("vector");
+			});
+
+			const p1 = (plugin as any).ensureVectorIndexLoaded();
+			const p2 = (plugin as any).ensureVectorIndexLoaded();
+			await Promise.all([p1, p2]);
+
+			// 幂等：返回同一个 Promise，分类/索引各只加载一次
+			expect(p1).toBe(p2);
+			expect(loadTags).toHaveBeenCalledTimes(1);
+			expect(loadVec).toHaveBeenCalledTimes(1);
+			// 顺序：分类必须先于向量索引（分类字段参与 embedding 文本）
+			expect(order).toEqual(["tags", "vector"]);
+		});
+
+		it("buildLocalIndex 早于 onLayoutReady 触发时也必须等待落盘索引（不再 await null）", async () => {
+			const { plugin } = makePlugin();
+			// 关键前提：此时 vectorIndexLoadPromise 仍为 null（onLayoutReady 未执行）。
+			// 修复前 buildLocalIndex 直接 `await null` 瞬间通过 → prevIdx 为空 → 全量重建。
+			expect((plugin as any).vectorIndexLoadPromise).toBeNull();
+
+			vi.spyOn(plugin as any, "loadPluginTags").mockResolvedValue(undefined);
+			const loadVec = vi.spyOn(plugin, "loadVectorIndex").mockImplementation(async () => {
+				plugin.translator.setVectorIndex({
+					ids: ["plugin-a"],
+					vectors: [new Float32Array([1, 0])],
+					hash: "hash-a",
+					model: "local|Xenova/multilingual-e5-small",
+					categorySchemaVersion: "v1",
+					perIdHash: { "plugin-a": "row-a" },
+					fieldsHash: "fields-a",
+				} as any);
+			});
+			vi.spyOn(plugin as any, "getViewPlugins").mockReturnValue([
+				{ id: "plugin-a", name: "A", description: "d" },
+			]);
+			// 隔断真实本地模型（jsdom 无 Worker），只验证「是否等待了落盘索引」这一契约
+			vi.spyOn(plugin as any, "ensureVectorIndexLoaded").mockImplementation(async () => {
+				await (plugin as any).loadPluginTags();
+				await plugin.loadVectorIndex();
+			});
+
+			await plugin.buildLocalIndex(false);
+
+			// 修复前：0 次（await null 直接通过，落盘索引被丢弃 → 全量重建）
+			expect(loadVec).toHaveBeenCalledTimes(1);
+			// 落盘索引确实被装进了 translator，可供 buildVectorIndex 作为 prevIndex 复用
+			expect(plugin.translator.getVectorIndex()?.ids).toEqual(["plugin-a"]);
+		});
+		});
