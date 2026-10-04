@@ -11,6 +11,7 @@ import { type PluginInfo, type TranslateResult } from "@domain/catalog/translato
 import { resolveUrl, classifyNetworkError, type MirrorConfig } from "@domain/catalog/mirror";
 import { fetchPluginStats, PLUGIN_STATS_URL } from "@domain/catalog/stats";
 import { formatRelativeTime, type I18nKey } from "@shared/i18n";
+import { requestIdle } from "@shared/platform";
 import { compareVersion } from "@shared/version";
 import { computeCoverage } from "@translation/lexicon/dictionary";
 import { createStrong, q, toHTMLElement } from "@ui/dom/dom";
@@ -30,14 +31,17 @@ import { setListState } from "@ui/dom/list-state";
 function scheduleBm25Warmup(ctx: ViewContext): void {
 	const plugins = ctx.plugins;
 	if (!plugins || plugins.length === 0) return;
-	// 让出当前渲染帧，避免阻塞数据就绪后的首屏绘制
-	window.setTimeout(() => {
+	// 空闲期再构建：BM25 构建是纯 CPU 同步任务（实测约 600ms），原先用 setTimeout(0)
+	// 会在数据就绪后立刻抢占主线程——插件刚更新完再打开视图时正好撞上，表现为卡顿。
+	// requestIdle 带 timeout 兜底（不会无限拖延），且在缺少 requestIdleCallback 的
+	// 移动端 WebView 上自动降级为 setTimeout。
+	requestIdle(() => {
 		try {
 			ctx.translator.aiSearcher.getBm25Index(plugins);
 		} catch {
 			// 预热失败不致命：首次搜索照常惰性构建
 		}
-	}, 0);
+	}, 300);
 }
 import { isAIMode } from "@domain/search/search-mode";
 

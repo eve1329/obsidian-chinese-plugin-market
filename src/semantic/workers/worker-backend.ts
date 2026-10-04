@@ -91,6 +91,15 @@ export function reportModelProgress(p: ModelProgress): void {
 	modelProgressReporter?.(p);
 }
 
+/**
+ * 释放全部共享本地语义 worker（terminate + 清单例表），返回释放数量。
+ * 供插件卸载调用，语义见 {@link WorkerLocalBackend.disposeAllShared}。
+ * 以模块级函数导出，调用方无需接触类本身。
+ */
+export function disposeAllShared(): number {
+	return WorkerLocalBackend.disposeAllShared();
+}
+
 type PendingEmbed = {
 	resolve: (vecs: Float32Array[]) => void;
 	reject: (err: Error) => void;
@@ -123,6 +132,32 @@ export class WorkerLocalBackend implements LocalModelBackend {
 			WorkerLocalBackend.instances.set(key, inst);
 		}
 		return inst;
+	}
+
+	/**
+	 * 释放全部共享实例：terminate 所有 worker + 清空单例表。返回释放数量。
+	 *
+	 * 必须在插件卸载（onunload）时调用。worker 是独立线程，其持有的 WASM 模型
+	 * （multilingual-e5-small 量级数百 MB）**不会**随 JS 上下文被 GC；而「自我更新」
+	 * 走的是 disable → enable，并不重启 Obsidian：
+	 *   - 旧实例的 worker 若不 terminate，会一直驻留（且其模型在 WASM 堆里）；
+	 *   - 新实例是全新的 JS 模块，`instances` 是新表 → getShared 另建一个 worker
+	 *     并从头加载模型，新旧两份并存。
+	 * 结果是「每更新一次泄漏一份模型」，内存与 CPU 压力单调增长，
+	 * 表现为「更新插件后再打开，整个 Obsidian 卡一段时间」，且越更新越卡。
+	 * （此前 dispose() 只在模型加载失败的 failInit 路径被调用，正常卸载无人释放。）
+	 */
+	static disposeAllShared(): number {
+		const n = WorkerLocalBackend.instances.size;
+		for (const inst of WorkerLocalBackend.instances.values()) {
+			try {
+				inst.dispose();
+			} catch {
+				/* 单个实例释放失败不影响其余 */
+			}
+		}
+		WorkerLocalBackend.instances.clear();
+		return n;
 	}
 
 	private worker: Worker | null = null;

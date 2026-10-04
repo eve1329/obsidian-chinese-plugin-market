@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import ChinesePluginMarketPlugin from "@app/plugin";
 import { Translator } from "@domain/catalog/translator";
+import { WorkerLocalBackend } from "@semantic/workers/worker-backend";
 
 /**
  * 持久化层回归（审计 P0-1）。
@@ -224,6 +225,17 @@ describe("Plugin 持久化契约（P0 回归）", () => {
 		plugin.onunload();
 		await vi.runAllTimersAsync();
 		expect(saveData).toHaveBeenCalled();
+	});
+
+	it("onunload 释放本地语义 worker（自我更新不再泄漏模型内存）", () => {
+		const { plugin } = makePlugin();
+		const before = WorkerLocalBackend.getShared({ model: "Xenova/multilingual-e5-small" });
+		plugin.onunload();
+		// 单例表已清空：下次 getShared 必然新建实例，旧 worker（含其 WASM 模型）不会被复用/驻留。
+		// 修复前 onunload 不释放 → 每次自我更新泄漏一份模型，内存与卡顿单调增长。
+		const after = WorkerLocalBackend.getShared({ model: "Xenova/multilingual-e5-small" });
+		expect(after).not.toBe(before);
+		WorkerLocalBackend.disposeAllShared();
 	});
 
 	it("个人收藏分离：落盘时写入 favorites.json 且主 data.json 不含 favorites", async () => {

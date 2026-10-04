@@ -36,7 +36,7 @@ import { setScrollDebug } from "@ui/view/view-render";
 import { TranslatorSettingTab } from "@app/settings-tab";
 import { debounce, mapWithConcurrency, contentHash, isAISearchUsable } from "@shared/utils";
 import { LocalEmbeddingProvider, buildVectorIndex, DEFAULT_LOCAL_MODEL, normalizeRemoteHost, embeddingIndexKey, type EmbeddingProvider, type IndexPlugin } from "@semantic/embedding";
-import { setWorkerSourceLoader, setModelProgressReporter, setWorkerFetchBridge, isWorkerFetchBridgeInstalled, reportModelProgress } from "@semantic/workers/worker-backend";
+import { setWorkerSourceLoader, setModelProgressReporter, setWorkerFetchBridge, isWorkerFetchBridgeInstalled, reportModelProgress, disposeAllShared } from "@semantic/workers/worker-backend";
 import { ChinesePluginMarketView, ChinesePluginMarketSettings, DEFAULT_SETTINGS, getDefaultSettings, type PluginProfile } from "@ui/view/translator-view";
 import { refreshOutdated } from "@ui/view/view-data";
 import { VIEW_TYPE } from "@shared/constants";
@@ -1223,15 +1223,19 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			window.clearTimeout(this.indexRefreshTimer);
 			this.indexRefreshTimer = null;
 		}
-		// 退出时先把当前 partial 索引做一次最佳努力 checkpoint，再关闭 SQLite。
-		// 不能只 dispose：构建中的向量尚未走到 buildLocalIndex 末尾，原来完全不会落盘。
-		const pendingBuild = this.buildLocalIndexPromise;
+		// 释放本地语义 worker 及其 WASM 模型：自我更新走 disable→enable（不重启 Obsidian），
+		// 旧 worker 不会被 GC，必须显式 terminate，否则每更新一次泄漏一份模型内存。
+		disposeAllShared();
+		// 卸载只做「至多一次」索引 checkpoint，随后立刻关闭 SQLite（快进快出）：
+		// - 构建中的向量已由 buildLocalIndex 的 scheduleCheckpoint（每 512 条）增量落盘，
+		//   此处再存一遍属于重复的全库序列化（perIdHash JSON.parse + 整库量化导出）；
+		// - 不再 await 构建：它会在下一批 embed 时因 localIndexUnloadRequested 自行中止，
+		//   未完成部分下次构建增量续建。原实现「存两遍 + 等构建」会在自我更新时长时间
+		//   占住主线程，用户感知就是整个 Obsidian 卡住。
 		void (async () => {
 			await this.saveVectorIndex().catch((e) =>
 				logger.warn("[Chinese Plugin Market] 卸载前保存 partial 向量索引失败：", e),
 			);
-			await pendingBuild?.catch(() => {});
-			await this.saveVectorIndex().catch(() => {});
 			await this.vectorStore?.dispose();
 		})();
 		// 卸载设置页翻译钩子并回写缓存（优先于落盘逻辑，确保缓存进入 data.json）
