@@ -78,6 +78,17 @@ export const STRINGS = {
 	"updates.versionDiff": { zh: "{local} → {latest}" },
 	"updates.summary": { zh: "更新完成：成功 {ok} / 失败 {fail}" },
 	"updates.checking": { zh: "正在检测更新…" },
+	// 视图切换：待更新（默认，只列有新版可更的）/ 全部已安装（含已是最新、已固定、已停用）
+	"updates.view.pending": { zh: "待更新" },
+	"updates.view.installed": { zh: "全部已安装" },
+	// 全部已安装视图的状态分组
+	"updates.group.outdated": { zh: "可更新" },
+	"updates.group.latest": { zh: "已是最新" },
+	"updates.group.disabled": { zh: "已停用" },
+	"updates.tag.latest": { zh: "最新" },
+	"updates.tag.disabled": { zh: "已停用" },
+	"updates.installedNone": { zh: "未检测到已安装的社区插件" },
+	"updates.installedNone.hint": { zh: "直链安装的插件与主题请看「直链」页签" },
 	// 版本固定（BRAT 式）：为单个已安装插件锁定版本，或保持跟随最新
 	"updates.pinned.title": { zh: "已固定版本" },
 	"updates.pinned.hint": { zh: "以下插件已锁定在指定版本，不再参与自动更新检测" },

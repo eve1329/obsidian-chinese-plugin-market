@@ -2,19 +2,25 @@
  * 「更新」页签列表渲染器。
  *
  * 主视图顶部的「更新」页签切到本视图时，调用 renderUpdatesList 在
- * ctx.updatesListEl 中渲染：
- * - 可更新插件的「名称 + 本地→最新版本差 + 勾选框 + 选版本 + 更新」；
- * - 「已固定版本」分区：列出被锁定到指定版本的插件（不参与自动更新检测），
- *   可一键「保持最新」或重新选择版本（BRAT 式）。
- * 顶部带「检查更新 / 全选 / 取消全选 / 更新所选(N) / 全部更新」工具条，
- * 多选 + 一键全更直接复用 ctx.updateSelected / ctx.updateAll。
+ * ctx.updatesListEl 中渲染。工具条右侧的 ⇕ 下拉在两种视图间切换：
+ * - pending（默认）：只列有官方新版可更的插件（「名称 + 版本差 + 勾选框 + 选版本 + 更新」），
+ *   保持「待办」语义，点进来 3 秒完成批量更新，不被上百个已装插件稀释；
+ * - installed：全部已安装社区插件的状态总览，按 可更新 / 已固定 / 已是最新 / 已停用 分组，
+ *   回答「我装了啥、它们各自什么状态」；0 个可更新时不再是一片空白。
+ *
+ * 直链安装的插件与主题仍由「直链」页签负责，不在此重复（它们也不在社区列表里）。
+ * 「已固定版本」在两种模式下都可见：这类插件不参与自动更新检测，若只出现在
+ * installed 视图里，pending 视图的用户将无法看到/解除固定。
  */
 
 import { Notice, setIcon } from "obsidian";
-import type { ViewContext } from "@ui/view/view-context";
+import type { ViewContext, UpdatesViewMode } from "@ui/view/view-context";
 import { refreshOutdated } from "@ui/view/view-data";
 import { openVersionPicker } from "@ui/components/version-picker-modal";
 import { createUpdateProgressLayer } from "@ui/components/update-progress";
+import { createMenuSelect } from "@ui/components/menu-select";
+import type { PluginInfo } from "@domain/catalog/translator";
+import type { I18nKey } from "@shared/i18n";
 
 /** 打开某插件的版本选择弹窗（更新页签与详情抽屉共用同一交互） */
 function openPickerFor(ctx: ViewContext, id: string, name: string, repo: string): void {
@@ -29,6 +35,116 @@ function openPickerFor(ctx: ViewContext, id: string, name: string, repo: string)
 	});
 }
 
+/** 勾选变化后就地刷新「已选 N / 共 M」与「更新所选(N)」，避免整页重绘丢失焦点/滚动 */
+type SyncSelUI = () => void;
+
+function addPinButton(ctx: ViewContext, row: HTMLElement, p: PluginInfo): void {
+	const pinBtn = row.createEl("button", {
+		cls: "pt-updates-row-pin clickable-icon",
+		attr: { "aria-label": ctx.t("updates.pin"), title: ctx.t("updates.pin"), type: "button" },
+	});
+	setIcon(pinBtn, "tag");
+	pinBtn.addEventListener("click", () => {
+		if (p.repo) openPickerFor(ctx, p.id, p.name, p.repo);
+	});
+}
+
+function addUpdateButton(ctx: ViewContext, row: HTMLElement, p: PluginInfo): void {
+	const updBtn = row.createEl("button", {
+		cls: "pt-updates-row-update clickable-icon",
+		attr: { "aria-label": ctx.t("action.update"), title: ctx.t("action.update"), type: "button" },
+	});
+	setIcon(updBtn, "arrow-down-to-line");
+	updBtn.addEventListener("click", () => {
+		void (async () => {
+			if (updBtn.hasClass("pt-spin")) return;
+			updBtn.addClass("pt-spin");
+			await ctx.updatePlugin(p.id);
+			updBtn.removeClass("pt-spin");
+			ctx.refreshViewTabsBadge?.();
+			ctx.renderUpdatesList();
+		})();
+	});
+}
+
+/** 可更新行：勾选框 + 名称 + 版本差 + 选版本 + 更新 */
+function renderOutdatedRow(
+	ctx: ViewContext,
+	row: HTMLElement,
+	p: PluginInfo,
+	syncSelUI: SyncSelUI,
+): void {
+	const info = ctx.outdatedInfo?.get(p.id);
+	const cb = row.createEl("input", {
+		cls: "pt-updates-check",
+		type: "checkbox",
+		attr: { type: "checkbox", "aria-label": p.name },
+	});
+	cb.checked = ctx.updateSelection.has(p.id);
+	cb.addEventListener("change", () => {
+		if (cb.checked) ctx.updateSelection.add(p.id);
+		else ctx.updateSelection.delete(p.id);
+		syncSelUI();
+	});
+	row.createDiv({ cls: "pt-updates-name", text: p.name });
+	row.createDiv({
+		cls: "pt-updates-diff",
+		text: ctx.t("updates.versionDiff", { local: info?.local ?? "", latest: info?.latest ?? "" }),
+	});
+	addPinButton(ctx, row, p);
+	addUpdateButton(ctx, row, p);
+}
+
+/** 已固定版本行：名称 + 固定版本 + 选版本 + 改回「保持最新」 */
+function renderPinnedRow(ctx: ViewContext, row: HTMLElement, p: PluginInfo): void {
+	row.addClass("pt-updates-row--pinned");
+	row.createDiv({ cls: "pt-updates-name", text: p.name });
+	row.createDiv({
+		cls: "pt-updates-diff pt-updates-pinned-ver",
+		text: ctx.t("version.pinned", { version: ctx.pluginVersionPins?.[p.id] ?? "" }),
+	});
+	addPinButton(ctx, row, p);
+
+	const unpinBtn = row.createEl("button", {
+		cls: "pt-updates-row-update pt-updates-unpin clickable-icon",
+		attr: { "aria-label": ctx.t("version.latest"), title: ctx.t("version.latest"), type: "button" },
+	});
+	setIcon(unpinBtn, "arrow-down-to-line");
+	unpinBtn.addEventListener("click", () => {
+		void (async () => {
+			if (unpinBtn.hasClass("pt-spin")) return;
+			unpinBtn.addClass("pt-spin");
+			await ctx.pinPluginVersion(p.id, null);
+			unpinBtn.removeClass("pt-spin");
+			ctx.renderUpdatesList();
+		})();
+	});
+}
+
+/** 已是最新 / 已停用行：纯状态展示（无操作按钮），名称 + 本地版本 + 状态标签 */
+function renderStatusRow(ctx: ViewContext, row: HTMLElement, p: PluginInfo, tagKey: I18nKey): void {
+	row.addClass("pt-updates-row--plain");
+	row.createDiv({ cls: "pt-updates-name", text: p.name });
+	row.createDiv({ cls: "pt-updates-diff", text: ctx.installedVersions?.get(p.id) ?? "" });
+	row.createDiv({ cls: "pt-updates-tag", text: ctx.t(tagKey) });
+}
+
+/** 状态分组：标题带数量，可选提示，下面挂行 */
+function renderGroup(
+	parent: HTMLElement,
+	title: string,
+	plugins: PluginInfo[],
+	renderRow: (row: HTMLElement, p: PluginInfo) => void,
+	hint?: string,
+): void {
+	if (plugins.length === 0) return;
+	const section = parent.createDiv({ cls: "pt-updates-group" });
+	section.createDiv({ cls: "pt-updates-group-title", text: `${title} (${plugins.length})` });
+	if (hint) section.createDiv({ cls: "pt-updates-group-hint", text: hint });
+	const rows = section.createDiv({ cls: "pt-updates-rows" });
+	for (const p of plugins) renderRow(rows.createDiv({ cls: "pt-updates-row" }), p);
+}
+
 export function renderUpdatesList(ctx: ViewContext): void {
 	const el = ctx.updatesListEl;
 	if (!el) return;
@@ -36,6 +152,7 @@ export function renderUpdatesList(ctx: ViewContext): void {
 	el.empty();
 
 	const outdated = [...(ctx.outdatedIds ?? [])];
+	const installedMode = (ctx.updatesViewMode ?? "pending") === "installed";
 
 	// ── 顶部工具条 ──
 	const bar = el.createDiv({ cls: "pt-updates-bar" });
@@ -96,12 +213,38 @@ export function renderUpdatesList(ctx: ViewContext): void {
 		runBatchUpdate(ctx, bar, ids, true);
 	});
 
+	// 视图切换（.pt-select 配方 + ⇕ 图标，与浏览页筛选下拉同语言）：
+	// pending = 只看待更新；installed = 全部已安装插件状态总览
+	createMenuSelect(bar, {
+		getOptions: () => [
+			{ value: "pending", label: t("updates.view.pending") },
+			{ value: "installed", label: t("updates.view.installed") },
+		],
+		getValue: () => ctx.updatesViewMode ?? "pending",
+		onPick: (v) => {
+			if (v === (ctx.updatesViewMode ?? "pending")) return;
+			ctx.updatesViewMode = v as UpdatesViewMode;
+			ctx.renderUpdatesList();
+		},
+	});
+
+	const syncSelUI: SyncSelUI = () => {
+		count.setText(t("updates.count", { n: String(ctx.updateSelection.size), m: String(outdated.length) }));
+		updateSel.setText(t("updates.updateSelected", { n: String(ctx.updateSelection.size) }));
+	};
+
+	// ── 全部已安装：按状态分组总览 ──
+	if (installedMode) {
+		renderInstalledGroups(ctx, el, syncSelUI);
+		return;
+	}
+
 	// ── 空态 ──
 	if (outdated.length === 0) {
 		const empty = el.createDiv({ cls: "pt-updates-empty" });
 		empty.createDiv({ cls: "pt-updates-empty-title", text: t("updates.empty") });
 		empty.createDiv({ cls: "pt-updates-empty-hint", text: t("updates.empty.hint") });
-		renderPinnedSection(ctx, el);
+		renderGroup(el, t("updates.pinned.title"), pinnedPlugins(ctx), (row, p) => renderPinnedRow(ctx, row, p), t("updates.pinned.hint"));
 		return;
 	}
 
@@ -112,110 +255,70 @@ export function renderUpdatesList(ctx: ViewContext): void {
 		.sort((a, b) => a.name.localeCompare(b.name));
 
 	for (const p of infos) {
-		const info = ctx.outdatedInfo?.get(p.id);
-		const row = rows.createDiv({ cls: "pt-updates-row" });
-
-		const cb = row.createEl("input", {
-			cls: "pt-updates-check",
-			type: "checkbox",
-			attr: { type: "checkbox", "aria-label": p.name },
-		});
-		cb.checked = ctx.updateSelection.has(p.id);
-		cb.addEventListener("change", () => {
-			if (cb.checked) ctx.updateSelection.add(p.id);
-			else ctx.updateSelection.delete(p.id);
-			count.setText(t("updates.count", { n: String(ctx.updateSelection.size), m: String(outdated.length) }));
-			updateSel.setText(t("updates.updateSelected", { n: String(ctx.updateSelection.size) }));
-		});
-
-		const name = row.createDiv({ cls: "pt-updates-name" });
-		name.setText(p.name);
-
-		row.createDiv({
-			cls: "pt-updates-diff",
-			text: t("updates.versionDiff", { local: info?.local ?? "", latest: info?.latest ?? "" }),
-		});
-
-		// 选版本（固定到某个旧版本，或改为保持最新）
-		const pinBtn = row.createEl("button", {
-			cls: "pt-updates-row-pin clickable-icon",
-			attr: { "aria-label": t("updates.pin"), title: t("updates.pin"), type: "button" },
-		});
-		setIcon(pinBtn, "tag");
-		pinBtn.addEventListener("click", () => {
-			if (p.repo) openPickerFor(ctx, p.id, p.name, p.repo);
-		});
-
-		const updBtn = row.createEl("button", {
-			cls: "pt-updates-row-update clickable-icon",
-			attr: { "aria-label": t("action.update"), title: t("action.update"), type: "button" },
-		});
-		setIcon(updBtn, "arrow-down-to-line");
-		updBtn.addEventListener("click", () => {
-			void (async () => {
-				if (updBtn.hasClass("pt-spin")) return;
-				updBtn.addClass("pt-spin");
-				await ctx.updatePlugin(p.id);
-				updBtn.removeClass("pt-spin");
-				ctx.refreshViewTabsBadge?.();
-				ctx.renderUpdatesList();
-			})();
-		});
+		renderOutdatedRow(ctx, rows.createDiv({ cls: "pt-updates-row" }), p, syncSelUI);
 	}
 
-	renderPinnedSection(ctx, el);
+	renderGroup(el, t("updates.pinned.title"), pinnedPlugins(ctx), (row, p) => renderPinnedRow(ctx, row, p), t("updates.pinned.hint"));
+}
+
+/** 已固定版本的已安装插件（按名称排序） */
+function pinnedPlugins(ctx: ViewContext): PluginInfo[] {
+	const pins = ctx.pluginVersionPins ?? {};
+	return ctx.allPlugins
+		.filter((p) => pins[p.id] && (ctx.installedIds?.has(p.id) ?? false))
+		.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /**
- * 「已固定版本」分区：列出锁定到指定版本的已安装插件。
- * 这些插件不参与自动更新检测，因此不会出现在上面的可更新列表里，
- * 需要独立分区让用户能看见并解除固定。
+ * 「全部已安装」视图：已安装插件按状态分组（可更新 / 已固定 / 已是最新 / 已停用）。
+ *
+ * 分组按优先级独占分配——每个插件只出现在一个分组里（可更新 > 已固定 > 已停用 > 已是最新），
+ * 避免同一个插件在两处重复出现。可更新置顶，保证待办仍然第一眼可见。
  */
-function renderPinnedSection(ctx: ViewContext, el: HTMLElement): void {
-	const pins = ctx.pluginVersionPins ?? {};
+function renderInstalledGroups(ctx: ViewContext, el: HTMLElement, syncSelUI: SyncSelUI): void {
 	const t = ctx.t;
-	const pinned = ctx.allPlugins
-		.filter((p) => pins[p.id] && (ctx.installedIds?.has(p.id) ?? false))
-		.sort((a, b) => a.name.localeCompare(b.name));
-	if (pinned.length === 0) return;
+	const installed = ctx.allPlugins.filter((p) => ctx.installedIds?.has(p.id) ?? false);
 
-	const section = el.createDiv({ cls: "pt-updates-pinned" });
-	section.createDiv({ cls: "pt-updates-pinned-title", text: t("updates.pinned.title") });
-	section.createDiv({ cls: "pt-updates-pinned-hint", text: t("updates.pinned.hint") });
-
-	const rows = section.createDiv({ cls: "pt-updates-rows" });
-	for (const p of pinned) {
-		const row = rows.createDiv({ cls: "pt-updates-row pt-updates-row--pinned" });
-		row.createDiv({ cls: "pt-updates-name", text: p.name });
-		row.createDiv({
-			cls: "pt-updates-diff pt-updates-pinned-ver",
-			text: t("version.pinned", { version: pins[p.id] }),
-		});
-
-		const pinBtn = row.createEl("button", {
-			cls: "pt-updates-row-pin clickable-icon",
-			attr: { "aria-label": t("updates.pin"), title: t("updates.pin"), type: "button" },
-		});
-		setIcon(pinBtn, "tag");
-		pinBtn.addEventListener("click", () => {
-			if (p.repo) openPickerFor(ctx, p.id, p.name, p.repo);
-		});
-
-		const unpinBtn = row.createEl("button", {
-			cls: "pt-updates-row-update pt-updates-unpin clickable-icon",
-			attr: { "aria-label": t("version.latest"), title: t("version.latest"), type: "button" },
-		});
-		setIcon(unpinBtn, "arrow-down-to-line");
-		unpinBtn.addEventListener("click", () => {
-			void (async () => {
-				if (unpinBtn.hasClass("pt-spin")) return;
-				unpinBtn.addClass("pt-spin");
-				await ctx.pinPluginVersion(p.id, null);
-				unpinBtn.removeClass("pt-spin");
-				ctx.renderUpdatesList();
-			})();
-		});
+	if (installed.length === 0) {
+		const empty = el.createDiv({ cls: "pt-updates-empty" });
+		empty.createDiv({ cls: "pt-updates-empty-title", text: t("updates.installedNone") });
+		empty.createDiv({ cls: "pt-updates-empty-hint", text: t("updates.installedNone.hint") });
+		return;
 	}
+
+	const byName = (a: PluginInfo, b: PluginInfo) => a.name.localeCompare(b.name);
+	const taken = new Set<string>();
+	const take = (pred: (p: PluginInfo) => boolean): PluginInfo[] => {
+		const list = installed.filter((p) => !taken.has(p.id) && pred(p)).sort(byName);
+		for (const p of list) taken.add(p.id);
+		return list;
+	};
+
+	renderGroup(
+		el,
+		t("updates.group.outdated"),
+		take((p) => ctx.outdatedIds?.has(p.id) ?? false),
+		(row, p) => renderOutdatedRow(ctx, row, p, syncSelUI),
+	);
+	renderGroup(
+		el,
+		t("updates.pinned.title"),
+		take((p) => Boolean(ctx.pluginVersionPins?.[p.id])),
+		(row, p) => renderPinnedRow(ctx, row, p),
+		t("updates.pinned.hint"),
+	);
+	renderGroup(
+		el,
+		t("updates.group.disabled"),
+		take((p) => !(ctx.enabledIds?.has(p.id) ?? true)),
+		(row, p) => renderStatusRow(ctx, row, p, "updates.tag.disabled"),
+	);
+	renderGroup(
+		el,
+		t("updates.group.latest"),
+		take(() => true),
+		(row, p) => renderStatusRow(ctx, row, p, "updates.tag.latest"),
+	);
 }
 
 /**

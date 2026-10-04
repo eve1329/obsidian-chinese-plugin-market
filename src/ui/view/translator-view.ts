@@ -264,7 +264,7 @@ import { renderPluginList, recomputeSmartSignalsIfNeeded, runFilterPipeline, upd
 import { startInstalledWatch } from "@ui/view/installed-watch";
 import { onCardClick, handleInstall, handleToggleEnabled, toggleFavorite, onCardKeydown, focusCardByIdx, flashAction, computeSimilarFor, openDetailDrawer as _openDetailDrawer } from "@ui/view/view-cards";
 import { renderFeaturedSection, ensureFeaturedSection, hideFeaturedSection } from "@ui/view/view-featured";
-import { createViewContext, type ViewContext, type ViewTab } from "@ui/view/view-context";
+import { createViewContext, type ViewContext, type ViewTab, type UpdatesViewMode } from "@ui/view/view-context";
 import { updateCompareTray, openCompareModal, enterCompareMode, exitCompareMode } from "@ui/view/view-compare";
 import { disposeComparePage } from "@ui/components/compare-view";
 
@@ -490,6 +490,8 @@ export class ChinesePluginMarketView extends ItemView {
 	public viewTab: ViewTab = "browse";
 	/** 更新页签里被勾选（待更新）的插件 id 集合 */
 	public updateSelection = new Set<string>();
+	/** 更新页签视图模式：pending（默认，只列可更新）/ installed（全部已安装状态总览） */
+	public updatesViewMode: UpdatesViewMode = "pending";
 	/** 「更新」页签列表容器（由 view-chrome 创建并挂到 ctx.updatesListEl） */
 	public updatesListEl: HTMLElement | null = null;
 	/** 「直链」页签列表容器（由 view-chrome 创建并挂到 ctx.betaListEl） */

@@ -53,6 +53,13 @@ import type { CssStorePort } from "@ui/settings/snippet-manage-store";
 export type ViewTab = "browse" | "updates" | "beta" | "css" | "favorites";
 
 /**
+ * 「更新」页签的视图模式：
+ * - pending：只列有官方新版可更的插件（默认，保持「待办」语义，批量更新最快）
+ * - installed：全部已安装社区插件的状态总览（可更新 / 已固定 / 已是最新 / 已停用 分组）
+ */
+export type UpdatesViewMode = "pending" | "installed";
+
+/**
  * ViewContext 是 ChinesePluginMarketView 公共状态的扁平投影。
  *
  * 数据字段（只读或可读写，由实现决定）：
@@ -287,6 +294,8 @@ export interface ViewContext {
 	viewTab: ViewTab;
 	/** 更新页签里被勾选（待更新）的插件 id 集合 */
 	updateSelection: Set<string>;
+	/** 更新页签视图模式：pending = 只列有新版可更的（默认）；installed = 全部已安装插件状态总览 */
+	updatesViewMode: UpdatesViewMode;
 	/** 切换到指定页签（浏览 / 更新 / 直链），负责显隐列表层并更新 tab 高亮 */
 	switchViewTab: (tab: ViewTab) => void;
 	/** 批量更新指定插件到最新版并刷新更新列表 */
@@ -731,6 +740,8 @@ get authorFacetList() { return view.authorFacetList; },
 		set viewTab(v) { view.viewTab = v; },
 		get updateSelection() { return view.updateSelection; },
 		set updateSelection(v) { view.updateSelection = v; },
+		get updatesViewMode() { return view.updatesViewMode; },
+		set updatesViewMode(v) { view.updatesViewMode = v; },
 		get installingIds() { return view.installingIds; },
 		set installingIds(v) { view.installingIds = v; },
 		get updatingIds() { return view.updatingIds; },
