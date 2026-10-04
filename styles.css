@@ -447,9 +447,6 @@ button.pt-profile-dropdown.pt-profile-dropdown.pt-profile-dropdown {
 .pt-ai-icon-btn.pt-ai-icon-btn.pt-ai-icon-btn {
 	padding: 0;
 }
-.pt-journal-copy.pt-journal-copy.pt-journal-copy {
-	padding: 3px 10px;
-}
 .pt-facet-more.pt-facet-more.pt-facet-more {
 	padding: 4px 8px;
 }
@@ -1429,14 +1426,71 @@ button.pt-profile-dropdown:active { transform: scale(0.94); }
 	color: var(--text-normal);
 }
 .pt-journal-status-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.pt-journal-status.is-active {
-	background: var(--interactive-accent);
-	color: var(--text-on-accent);
-	border-color: var(--interactive-accent);
+/* 台账控制行统一接入全站小按钮配方（.pt-select-btn 同款：次级底 + 细描边 + 小圆角），
+   「全部原因」下拉用 createMenuSelect（文案 + ⇕ chevrons-up-down 图标 + 原生 Menu），
+   与 CSS 片段 / 收藏页签完全同语言。journal 视图根未挂 .pt-view（其 absolute 布局会
+   破坏表格滚动），故以 .pt-journal-view 前缀复刻同一份值。 */
+.pt-journal-view .pt-filter {
+	appearance: none;
+	display: inline-flex;
+	align-items: center;
+	border: 1px solid var(--pt-border, var(--background-modifier-border));
+	border-radius: var(--pt-radius-sm, var(--radius-s));
+	background: var(--pt-surface, var(--background-secondary));
+	color: var(--pt-text, var(--text-normal));
+	padding: 2px 8px;
+	font-size: var(--font-ui-small, 13px);
+	box-shadow: none;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background var(--pt-duration-fast, 120ms) ease, border-color var(--pt-duration-fast, 120ms) ease;
 }
-.pt-journal-verdict { padding: 3px 6px; border: 1px solid var(--background-modifier-border); border-radius: var(--pt-radius); }
-.pt-journal-copy { padding: 3px 10px; border: 1px solid var(--background-modifier-border); border-radius: var(--pt-radius); cursor: pointer; }
-.pt-journal-copy:hover { background: var(--background-modifier-hover); }
+.pt-journal-view .pt-filter:hover {
+	background: var(--pt-surface-hover, var(--background-modifier-hover));
+	border-color: var(--pt-border-strong, var(--background-modifier-border-hover));
+}
+.pt-journal-view .pt-filter[aria-pressed="true"] {
+	background: var(--interactive-accent);
+	border-color: transparent;
+	color: var(--text-on-accent);
+	font-weight: var(--pt-weight-semibold, 600);
+}
+/* 「全部原因」= createMenuSelect 的 .pt-select 结构，复刻 .pt-view 下同名配方 */
+.pt-journal-view .pt-select {
+	display: inline-flex;
+	align-items: center;
+}
+.pt-journal-view .pt-select-btn {
+	appearance: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	font-size: var(--font-ui-small, 13px);
+	color: var(--pt-text, var(--text-normal));
+	background: var(--pt-surface, var(--background-secondary));
+	border: 1px solid var(--pt-border, var(--background-modifier-border));
+	border-radius: var(--pt-radius-sm, var(--radius-s));
+	box-shadow: none;
+	cursor: pointer;
+	transition: background var(--pt-duration-fast, 120ms) ease, border-color var(--pt-duration-fast, 120ms) ease;
+}
+.pt-journal-view .pt-select-btn:hover {
+	background: var(--pt-surface-hover, var(--background-modifier-hover));
+	border-color: var(--pt-border-strong, var(--background-modifier-border-hover));
+}
+.pt-journal-view .pt-select-label {
+	white-space: nowrap;
+}
+.pt-journal-view .pt-select-caret {
+	display: inline-flex;
+	align-items: center;
+	color: var(--pt-text-muted, var(--text-muted));
+}
+.pt-journal-view .pt-select-caret svg {
+	width: 12px;
+	height: 12px;
+}
 
 /* 表格本体 */
 .pt-journal-table {

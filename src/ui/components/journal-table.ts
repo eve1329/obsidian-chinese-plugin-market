@@ -6,6 +6,7 @@
  */
 import { VERDICT_PRESETS, type JournalStatus } from "@domain/journal/journal-entry";
 import type { I18nKey } from "@shared/i18n";
+import { createMenuSelect } from "@ui/components/menu-select";
 
 export interface JournalRow {
 	id: string;
@@ -214,8 +215,9 @@ export function renderJournalTable(
 			statusChips.empty();
 			statusDefs.forEach(([v, key]) => {
 				const b = statusChips.createEl("button", {
-					cls: "pt-filter pt-journal-status" + (filter.status === v ? " is-active" : ""),
+					cls: "pt-filter pt-journal-status",
 					text: t(key),
+					attr: { "aria-pressed": filter.status === v ? "true" : "false" },
 				});
 				b.addEventListener("click", () => {
 					filter.status = v;
@@ -226,20 +228,20 @@ export function renderJournalTable(
 		};
 		paintStatus();
 
-		const verdictSel = ctrl.createEl("select", { cls: "pt-journal-verdict" });
-		const optAll = verdictSel.createEl("option", { text: t("journal.verdictAll") });
-		optAll.value = "";
-		for (const v of VERDICT_PRESETS) {
-			const o = verdictSel.createEl("option", { text: v });
-			o.value = v;
-		}
-		verdictSel.value = filter.verdict ?? "";
-		verdictSel.addEventListener("change", () => {
-			filter.verdict = verdictSel.value || null;
-			drawBody();
+		// 「全部原因」下拉：与 CSS 片段/收藏页签同款 createMenuSelect（文案 + ⇕ 图标 + 原生 Menu）
+		createMenuSelect(ctrl, {
+			getOptions: () => [
+				{ value: "", label: t("journal.verdictAll") },
+				...VERDICT_PRESETS.map((v) => ({ value: v, label: v })),
+			],
+			getValue: () => filter.verdict ?? "",
+			onPick: (v) => {
+				filter.verdict = v || null;
+				drawBody();
+			},
 		});
 
-		const copyBtn = ctrl.createEl("button", { cls: "pt-journal-copy", text: t("journal.copy") });
+		const copyBtn = ctrl.createEl("button", { cls: "pt-filter pt-journal-copy", text: t("journal.copy") });
 		copyBtn.addEventListener("click", () => {
 			void (async () => {
 				const md = journalRowsToMarkdown(filteredSorted(), t);
