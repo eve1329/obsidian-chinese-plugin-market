@@ -601,9 +601,10 @@ export async function vectorRecall(
 	query: string,
 	index: VectorIndex,
 	k: number,
-	minScore = -1
+	minScore = -1,
+	allowedIndices?: ReadonlySet<number>,
 ): Promise<string[]> {
-	const m = await vectorRecallScores(provider, query, index, k, minScore);
+	const m = await vectorRecallScores(provider, query, index, k, minScore, allowedIndices);
 	return m ? Array.from(m.keys()) : [];
 }
 
@@ -648,7 +649,8 @@ export async function vectorRecallScores(
 	query: string,
 	index: VectorIndex,
 	k: number,
-	minScore = -1
+	minScore = -1,
+	allowedIndices?: ReadonlySet<number>,
 ): Promise<Map<string, number> | null> {
 	if (!index.vectors.length) return null;
 	// query 同样转简体（与索引同空间）；e5 系列再注入 "query: " 指令前缀
@@ -663,7 +665,7 @@ export async function vectorRecallScores(
 		if (queryVec && queryVec.length > 0) setCachedQueryVec(provider, index.model, embedQuery, queryVec);
 	}
 	if (!queryVec || queryVec.length === 0) return null;
-	const top = topKBySimilarity(queryVec, index.vectors, k, minScore);
+	const top = topKBySimilarity(queryVec, index.vectors, k, minScore, allowedIndices);
 	const m = new Map<string, number>();
 	for (const t of top) {
 		if (t.index >= 0 && t.index < index.ids.length) {
