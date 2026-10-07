@@ -415,8 +415,11 @@ export interface IndexPlugin {
 
 /** 动态构建向量索引时的可选发布配置。 */
 export interface VectorBuildOptions {
-	/** 动态全量构建：每 embed 完一片即回调（id→向量），供调用方实时发布部分索引。 */
-	onPartial?: (updates: Map<string, number[] | Float32Array>) => void;
+	/** 动态全量构建：每 embed 完一片即回调（id→向量+内容指纹），供调用方实时发布/持久化部分索引。 */
+	onPartial?: (
+		updates: Map<string, number[] | Float32Array>,
+		perIdHash: Map<string, string>,
+	) => void;
 	/** 分片大小（默认 256）。 */
 	chunk?: number;
 }
@@ -548,12 +551,15 @@ export async function buildVectorIndex(
 			const slice = needEmbed.slice(s, s + CHUNK);
 			const newVecs = await provider.embed(slice.map((i) => texts[i]));
 			const updates = new Map<string, number[] | Float32Array>();
+			const partialHashes = new Map<string, string>();
 			for (let k = 0; k < slice.length; k++) {
 				const v = Float32Array.from(normalizeVector(newVecs[k]));
 				vectors[slice[k]] = v;
-				updates.set(plugins[slice[k]].id, v);
+				const id = plugins[slice[k]].id;
+				updates.set(id, v);
+				partialHashes.set(id, perIdHash[id]);
 			}
-			buildOpts?.onPartial?.(updates);
+			buildOpts?.onPartial?.(updates, partialHashes);
 		}
 	}
 
@@ -589,9 +595,10 @@ export async function vectorRecall(
 	query: string,
 	index: VectorIndex,
 	k: number,
-	minScore = -1
+	minScore = -1,
+	allowedIndices?: ReadonlySet<number>,
 ): Promise<string[]> {
-	const m = await vectorRecallScores(provider, query, index, k, minScore);
+	const m = await vectorRecallScores(provider, query, index, k, minScore, allowedIndices);
 	return m ? Array.from(m.keys()) : [];
 }
 
@@ -636,7 +643,8 @@ export async function vectorRecallScores(
 	query: string,
 	index: VectorIndex,
 	k: number,
-	minScore = -1
+	minScore = -1,
+	allowedIndices?: ReadonlySet<number>,
 ): Promise<Map<string, number> | null> {
 	if (!index.vectors.length) return null;
 	// query 同样转简体（与索引同空间）；e5 系列再注入 "query: " 指令前缀
@@ -651,7 +659,7 @@ export async function vectorRecallScores(
 		if (queryVec && queryVec.length > 0) setCachedQueryVec(provider, index.model, embedQuery, queryVec);
 	}
 	if (!queryVec || queryVec.length === 0) return null;
-	const top = topKBySimilarity(queryVec, index.vectors, k, minScore);
+	const top = topKBySimilarity(queryVec, index.vectors, k, minScore, allowedIndices);
 	const m = new Map<string, number>();
 	for (const t of top) {
 		if (t.index >= 0 && t.index < index.ids.length) {

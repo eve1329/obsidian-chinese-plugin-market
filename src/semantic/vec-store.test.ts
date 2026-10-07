@@ -170,17 +170,19 @@ describe("SqliteVectorStore", () => {
 		const s = await SqliteVectorStore.open(adapter, file, SQL as any);
 		s.replaceAll([{ id: "w1", vec: [1, 0] }]);
 		const first = s.flush(); // 进入 export→await write 窗口
-		// 窗口内的新变更：旧实现在写盘结束后把 mutationCount 归零，使其再无写盘触发器
-		s.setMeta("late", "1");
-		s.upsertMany([{ id: "w1", vec: [0, 1] }]);
+		// 窗口内的新变更：旧实现在写盘结束后把 mutationCount 归零，使其再无写盘触发器。
+		// 这批变更达到阈值，验证第一次 flush 完成后会自动补起第二次写盘，
+		// 而不是等 dispose() 才碰巧补写。
+		for (let i = 0; i < 100; i++) {
+			s.upsertMany([{ id: `late-${i}`, vec: [0, 1] }]);
+		}
 		release!();
 		await first;
+		expect(calls).toBeGreaterThanOrEqual(2);
 		await s.dispose();
 
-		expect(calls).toBeGreaterThanOrEqual(2); // 窗口内变更触发了补写
 		const s2 = await SqliteVectorStore.open(adapter, file, SQL as any);
-		expect(s2.getMeta("late")).toBe("1");
-		expect(s2.getAllVecs().get("w1")![1]).toBeCloseTo(1);
+		expect(s2.count()).toBe(101);
 		await s2.dispose();
 	});
 });

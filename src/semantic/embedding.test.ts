@@ -196,6 +196,22 @@ describe("vectorRecall", () => {
 		expect(out).toEqual(["theme"]);
 	});
 
+	it("分类候选在 top-K 前过滤：选中分类排在全局 K 之后仍能召回", async () => {
+		const provider = makeMockProvider({ q: [1, 0, 0] });
+		const indexed: VectorIndex = {
+			ids: ["other-category", "selected-category", "selected-low"],
+			vectors: [
+				[1, 0, 0],
+				[0.9, 0.1, 0],
+				[0, 1, 0],
+			],
+			hash: "h",
+			model: "m1",
+		};
+		const out = await vectorRecall(provider, "q", indexed, 1, -1, new Set([1, 2]));
+		expect(out).toEqual(["selected-category"]);
+	});
+
 	it("空索引返回空", async () => {
 		const provider = makeMockProvider({ q: [1, 0, 0] });
 		const empty: VectorIndex = { ids: [], vectors: [], hash: "", model: "m1" };
@@ -401,12 +417,18 @@ describe("动态全量构建（onPartial 实时发布 + buildStats 可见性）"
 
 	it("onPartial 按分片回调；buildStats 区分全量/增量/no-op", async () => {
 		const sizes: number[] = [];
+		const partialHashes: Map<string, string>[] = [];
 		const p1 = makeMockProvider({});
 		const idx = await buildVectorIndex(p1, three, "m1", undefined, undefined, {
 			chunk: 2,
-			onPartial: (u) => sizes.push(u.size),
+			onPartial: (u, hashes) => {
+				sizes.push(u.size);
+				partialHashes.push(hashes);
+			},
 		});
 		expect(sizes).toEqual([2, 1]); // 3 条按 chunk=2 切片
+		expect([...partialHashes[0].keys()]).toEqual(["a", "b"]);
+		expect([...partialHashes[1].keys()]).toEqual(["c"]);
 		expect(idx.buildStats).toEqual({ embedded: 3, reused: 0 }); // 全量
 		expect(idx.partial).toBeUndefined();
 

@@ -172,8 +172,13 @@ export class SqliteVectorStore {
 	deleteMany(ids: string[]): void {
 		if (this.disposed || ids.length === 0) return;
 		const stmt = this.db.prepare("DELETE FROM plugins WHERE id = ?");
+		this.db.exec("BEGIN");
 		try {
 			for (const id of ids) stmt.run([id]);
+			this.db.exec("COMMIT");
+		} catch (e) {
+			this.db.exec("ROLLBACK");
+			throw e;
 		} finally {
 			stmt.free();
 		}
@@ -268,6 +273,20 @@ export class SqliteVectorStore {
 				this.mutationCount = Math.max(0, this.mutationCount - mark);
 			} finally {
 				this.flushInFlight = null;
+				// touch() 在 adapter.write 的 await 窗口内可能已经累积了新变更。
+				// 若当时达到阈值，touch() 只能看到 in-flight 而复用旧 Promise，不能
+				// 自动开启下一轮；这里在本轮结束后补上阈值 flush 或空闲定时器。
+				if (!this.disposed && this.mutationCount > 0) {
+					if (this.idleTimer) {
+						window.clearTimeout(this.idleTimer);
+						this.idleTimer = null;
+					}
+					if (this.mutationCount >= MUTATION_THRESHOLD) {
+						void this.flush();
+					} else {
+						this.idleTimer = window.setTimeout(() => void this.flush(), IDLE_FLUSH_MS);
+					}
+				}
 			}
 		})();
 		return this.flushInFlight;
