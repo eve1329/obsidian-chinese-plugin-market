@@ -461,6 +461,22 @@ describe("BM25 倒排索引（与单条打分等价性）", () => {
 		expect([...capped.keys()]).toEqual([...full.keys()].slice(0, 2));
 	});
 
+	it("BM25 索引 nameZh/descZh，中文字段可独立命中英文不含关键词的插件", () => {
+		const bilingual = [
+			{ id: "name-zh", name: "Alpha", description: "English only", nameZh: "中文名称" },
+			{ id: "desc-zh", name: "Beta", description: "Another English description", descZh: "离线绘图" },
+		];
+		const bilingualIndex = buildBm25Index(
+			bilingual,
+			computeIndexFingerprints(bilingual).bm25,
+		);
+
+		expect(bm25RecallScores("中文名称", bilingualIndex).has("name-zh")).toBe(true);
+		expect(bm25RecallScores("离线绘图", bilingualIndex).has("desc-zh")).toBe(true);
+		expect(bilingualIndex.docLenNorm).toHaveLength(bilingual.length);
+		expect(bilingualIndex.docLenNorm.every((n) => Number.isFinite(n))).toBe(true);
+	});
+
 	it("getBm25Index 按内容指纹缓存：内容不变复用同一引用，中间条目变化则重建", () => {
 		const { searcher } = makeSearcher();
 		// 内容指纹缓存：内容不变复用同一引用，中间条目变化则重建（PR #58 评测集新增）

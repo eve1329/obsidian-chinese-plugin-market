@@ -457,7 +457,8 @@ export function topKBySimilarity(
 	queryVec: number[],
 	itemVecs: ArrayLike<ArrayLike<number>>,
 	k: number,
-	minScore = -1
+	minScore = -1,
+	allowedIndices?: ReadonlySet<number>,
 ): { index: number; score: number }[] {
 	if (k <= 0 || !queryVec || queryVec.length === 0 || !itemVecs?.length) {
 		return [];
@@ -513,6 +514,7 @@ export function topKBySimilarity(
 	// 直接吃 getAllVecs 的 Float32Array，消除加载时的 Array.from 二次转换。
 	let dimMismatch = 0;
 	for (let vi = 0; vi < n; vi++) {
+		if (allowedIndices && !allowedIndices.has(vi)) continue;
 		const v = itemVecs[vi];
 		// 维度必须一致：余弦在不同维度上没有定义。旧实现写 `i < dim && i < v.length`，
 		// 对维度不一致的向量会**静默按较短维度截断** —— 于是「query 向量来自旧模型」

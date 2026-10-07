@@ -91,7 +91,7 @@ describe("computeIndexFingerprints · 与改造前的两份实现逐位一致", 
 		const after = [{ ...before[0], descZh: "新描述" }];
 
 		expect(computeIndexFingerprints(before).fields).not.toBe(computeIndexFingerprints(after).fields);
-		expect(computeIndexFingerprints(before).bm25).toBe(computeIndexFingerprints(after).bm25);
+		expect(computeIndexFingerprints(before).bm25).not.toBe(computeIndexFingerprints(after).bm25);
 	});
 });
 

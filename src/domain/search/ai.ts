@@ -121,6 +121,8 @@ export interface Bm25Index {
 	ids: string[];
 	/** docIdx → 文档 token 数（长度归一化用，避免召回时再数一遍） */
 	docLen: number[];
+	/** docIdx → 预计算的 BM25 长度归一化分母，查询热路径直接读取 */
+	docLenNorm: number[];
 	/** term → 倒排表：命中该 term 的 docIdx 与对应词频 */
 	postings: Map<string, { idx: number[]; tf: number[] }>;
 	/** term → 文档频率（出现在多少个文档中） */
@@ -141,7 +143,7 @@ export interface Bm25Index {
  * @param sig 由调用方（getBm25Index）算好传入，避免这里重复计算内容指纹。
  */
 export function buildBm25Index(
-	allPlugins: { id: string; name: string; description: string }[],
+	allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[],
 	sig: string
 ): Bm25Index {
 	const ids: string[] = [];
@@ -153,7 +155,9 @@ export function buildBm25Index(
 	for (let di = 0; di < allPlugins.length; di++) {
 		const p = allPlugins[di];
 		ids.push(p.id);
-		const tokens = tokenizeForBM25(t2sForEmbed(`${p.name} ${p.description}`));
+		const tokens = tokenizeForBM25(
+			t2sForEmbed(`${p.name} ${p.nameZh ?? ""} ${p.description} ${p.descZh ?? ""}`)
+		);
 		docLen.push(tokens.length);
 		totalLen += tokens.length;
 
@@ -174,7 +178,8 @@ export function buildBm25Index(
 
 	const N = allPlugins.length;
 	const avgdl = N > 0 ? totalLen / N : 0;
-	return { ids, docLen, postings, df, N, avgdl, sig };
+	const docLenNorm = docLen.map((len) => bm25LenNorm(len, avgdl));
+	return { ids, docLen, docLenNorm, postings, df, N, avgdl, sig };
 }
 
 /**
@@ -203,7 +208,7 @@ export function bm25RecallScores(
 	const qtf = new Map<string, number>();
 	for (const t of queryTokens) qtf.set(t, (qtf.get(t) ?? 0) + 1);
 
-	const { postings, df, N, avgdl, ids, docLen } = index;
+	const { postings, df, N, ids, docLenNorm } = index;
 	const acc = new Map<number, number>(); // docIdx → 累计分
 	for (const [term, qtfCount] of qtf) {
 		const pl = postings.get(term);
@@ -214,19 +219,56 @@ export function bm25RecallScores(
 		const pTf = pl.tf;
 		for (let k = 0; k < pIdx.length; k++) {
 			const d = pIdx[k];
-			const lenNorm = bm25LenNorm(docLen[d], avgdl);
-			acc.set(d, (acc.get(d) ?? 0) + w * bm25TermWeight(pTf[k], lenNorm));
+			acc.set(d, (acc.get(d) ?? 0) + w * bm25TermWeight(pTf[k], docLenNorm[d]));
 		}
 	}
 
-	// 按 (score desc, docIdx asc) 排序。旧实现靠「按插件序插入 Map + 稳定排序」隐式
-	// 得到同一 tie-break，这里显式化，保证与旧实现逐条一致（含同分顺序）。
-	const entries = Array.from(acc.entries());
-	entries.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+	if (topK <= 0 || acc.size === 0) return new Map();
+
+	// 有界最小堆只保留前 topK 个候选，避免命中大量 posting 时把整个累加表
+	// 物化并排序。堆顶是当前 topK 中最差的候选：分数更低者更差，同分时 docIdx 更大者更差。
+	const limit = Math.min(topK, acc.size);
+	const heap: Array<[number, number]> = [];
+	const isWorse = (a: [number, number], b: [number, number]): boolean =>
+		a[1] < b[1] || (a[1] === b[1] && a[0] > b[0]);
+	const swap = (a: number, b: number) => {
+		const t = heap[a];
+		heap[a] = heap[b];
+		heap[b] = t;
+	};
+	const siftUp = (i: number) => {
+		while (i > 0) {
+			const p = (i - 1) >> 1;
+			if (!isWorse(heap[i], heap[p])) break;
+			swap(i, p);
+			i = p;
+		}
+	};
+	const siftDown = (i: number) => {
+		for (;;) {
+			const l = i * 2 + 1;
+			if (l >= heap.length) return;
+			const r = l + 1;
+			const child = r < heap.length && isWorse(heap[r], heap[l]) ? r : l;
+			if (!isWorse(heap[child], heap[i])) return;
+			swap(i, child);
+			i = child;
+		}
+	};
+	for (const [d, score] of acc) {
+		const candidate: [number, number] = [d, score];
+		if (heap.length < limit) {
+			heap.push(candidate);
+			siftUp(heap.length - 1);
+		} else if (isWorse(heap[0], candidate)) {
+			heap[0] = candidate;
+			siftDown(0);
+		}
+	}
+	heap.sort((a, b) => b[1] - a[1] || a[0] - b[0]);
 
 	const out = new Map<string, number>();
-	for (let i = 0; i < entries.length && out.size < topK; i++) {
-		const [d, s] = entries[i];
+	for (const [d, s] of heap) {
 		if (s > 0) out.set(ids[d], s);
 	}
 	return out;
@@ -355,7 +397,7 @@ export class AISearcher {
 	 *   computeIndexFingerprints 调用）可直接传入，省掉这里的第二次全库遍历。
 	 */
 	getBm25Index(
-		allPlugins: { id: string; name: string; description: string }[],
+		allPlugins: { id: string; name: string; description: string; nameZh?: string; descZh?: string }[],
 		precomputedSig?: string
 	): Bm25Index {
 		const sig = precomputedSig ?? computeIndexFingerprints(allPlugins).bm25;
@@ -721,12 +763,29 @@ export class AISearcher {
 			? `分类：${filterCategories.join(" / ")}\n${t2sForEmbed(query)}`
 			: t2sForEmbed(query);
 
+		// 分类过滤必须进入 top-K 选择本身：如果先取全局 top-K 再删除其它分类，
+		// 选中分类中排在全局第 K+1 的相关插件会被永久丢弃。
+		const allowedIndices = filterCategories?.length
+			? new Set(
+				built.ids.reduce<number[]>((indices, id, index) => {
+					if (filterCategories.includes(this.pluginTags[id]?.category ?? "")) indices.push(index);
+					return indices;
+				}, [])
+			  )
+			: undefined;
 		const scored = await timing.measure(PHASE.queryEncode, () =>
-			vectorRecallScores(provider, anchoredQuery, built, VECTOR_RECALL_CAP, VECTOR_MIN_SCORE)
+			vectorRecallScores(
+				provider,
+				anchoredQuery,
+				built,
+				VECTOR_RECALL_CAP,
+				VECTOR_MIN_SCORE,
+				allowedIndices,
+			)
 		);
 		if (!scored) return null;
-
-		// filterCategories 过滤：向量召回阶段先按分类裁剪（与旧行为一致）
+		// 保留一个结果层兜底：第三方/测试 provider 可能忽略 allowedIndices，
+		// 但正常实现已经在 top-K 前完成候选裁剪。
 		if (filterCategories?.length) {
 			for (const id of Array.from(scored.keys())) {
 				if (!filterCategories.includes(this.pluginTags[id]?.category ?? "")) scored.delete(id);
