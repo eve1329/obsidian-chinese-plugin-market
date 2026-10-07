@@ -180,6 +180,25 @@ describe("runAISearch (P2-1: 从 view-data 拆离 AI 搜索编排)", () => {
 		expect(ctx.aiSearchResult).toEqual({ rankedIds: ["a", "b"] });
 	});
 
+	it("已有 partial 索引时不等待整库构建，直接使用当前索引搜索", async () => {
+		const { ctx, translator, searchInput, aiBadge } = mkCtx({ embeddingSource: "local" });
+		ctx.searchMode = "local";
+		ctx.plugins = [{ id: "a", name: "A", description: "d" }] as any;
+		(ctx.plugin.localModelState as any) = { status: "ready", loaded: 0, total: 0 };
+		(translator as any).getVectorIndex = vi.fn().mockReturnValue({
+			ids: ["a"],
+			vectors: [[1, 0]],
+			model: "local:test",
+			partial: true,
+		});
+		(translator as any).aiSearchLocal = vi.fn().mockResolvedValue({ rankedIds: ["a"] });
+
+		await runAISearch(ctx, searchInput, aiBadge);
+
+		expect(ctx.buildLocalIndex).not.toHaveBeenCalled();
+		expect(translator.aiSearchLocal).toHaveBeenCalled();
+	});
+
 	it("pluginArgs 透传 downloads/updated（补丁 B 质量因子数据源，此前只在卡片展示）", async () => {
 		const { ctx, translator, searchInput, aiBadge } = mkCtx();
 		ctx.plugins.push({ id: "a", name: "A", description: "d", downloads: 123, updated: 456 } as any);
