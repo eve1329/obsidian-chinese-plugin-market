@@ -369,9 +369,18 @@ export class PluginDetailDrawer {
 		// 修复「关闭不灵敏」：关闭后列表瞬时恢复显示，双击 × 的第二击会落在
 		// 光标下的卡片上并经卡片点击委托【立即重开详情】，体验上等于没关掉。
 		// 这里在捕获阶段一次性吞掉紧随关闭的下一个 click。
+		// ⚠️ 只吞「会立即重开详情」的那一类点击：落在卡片上、且不是卡片内的交互控件
+		// （判定与 view-cards 的整卡点击委托完全一致）。曾经无条件吞掉全局下一个
+		// click，导致关闭抽屉后的第一次交互——最常见的是点搜索框 × 清除按钮——
+		// 被捕获阶段无声吞掉，用户感知就是「点击没反应」（第二次点击才生效）。
 		const swallowNextClick = (ev: MouseEvent) => {
-			ev.stopPropagation();
 			document.removeEventListener("click", swallowNextClick, true);
+			const t = ev.target as HTMLElement | null;
+			const wouldReopenDrawer =
+				!!t &&
+				!!t.closest(".pt-card") &&
+				!t.closest("button, a, [role='button'], input, select, textarea");
+			if (wouldReopenDrawer) ev.stopPropagation();
 		};
 		document.addEventListener("click", swallowNextClick, true);
 
