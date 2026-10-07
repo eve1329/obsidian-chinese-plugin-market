@@ -9,7 +9,7 @@ import { BM25_TOKENIZER_VERSION } from "@domain/search/bm25";
  * 联动失效缓存」一族），不能只哈希内容而漏掉分词器版本。
  *
  * 背景：搜索链路上有两个独立缓存的索引，各自需要「内容是否变化」的判定：
- *   - BM25 索引（ai.ts）只依赖 id / name / description；
+ *   - BM25 索引（ai.ts）依赖 id / name / description / nameZh / descZh；
  *   - 向量索引（embedding.ts）还依赖 category / tags（作为 embedding 输入的锚点）。
  * 原先两者各写一份遍历函数，每次搜索各跑一遍全量（6000 条 × 约 440k 字符）。
  *
@@ -99,7 +99,15 @@ export function computeIndexFingerprints<T extends FingerprintInput>(
 			bm25 = (bm25 * 33 + c) | 0;
 			fields = (fields * 33 + c) | 0;
 		}
-		// BM25 链到此为止；fields 链继续吸收分类维度
+
+		// BM25 同时索引中文译名/译描。只有条目确实携带双语字段时才追加这段，
+		// 让没有译文的旧索引继续沿用原签名；字段分隔符避免两个译文字段发生拼接歧义。
+		if (item.nameZh !== undefined || item.descZh !== undefined) {
+			for (const value of [item.nameZh ?? "", item.descZh ?? ""]) {
+				bm25 = (bm25 * 33 + FIELD_SEP) | 0;
+				for (let i = 0; i < value.length; i++) bm25 = (bm25 * 33 + value.charCodeAt(i)) | 0;
+			}
+		}
 		bm25 = (bm25 * 33 + ITEM_SEP) | 0;
 		fields = (fields * 33 + FIELD_SEP) | 0;
 
@@ -112,10 +120,10 @@ export function computeIndexFingerprints<T extends FingerprintInput>(
 
 		// 双语字段通常直接挂在插件条目上；tagsOf 仍保留覆盖入口，供分类服务
 		// 或其它调用方提供独立的译文来源。直接读取避免每条插件分配合并对象。
-		const nameZh = tagInfo?.nameZh ?? item.nameZh;
-		const descZh = tagInfo?.descZh ?? item.descZh;
-		if (nameZh !== undefined || descZh !== undefined) {
-			for (const value of [nameZh ?? "", descZh ?? ""]) {
+		const taggedNameZh = tagInfo?.nameZh ?? item.nameZh;
+		const taggedDescZh = tagInfo?.descZh ?? item.descZh;
+		if (taggedNameZh !== undefined || taggedDescZh !== undefined) {
+			for (const value of [taggedNameZh ?? "", taggedDescZh ?? ""]) {
 				for (let i = 0; i < value.length; i++) {
 					fields = (fields * 33 + value.charCodeAt(i)) | 0;
 				}
