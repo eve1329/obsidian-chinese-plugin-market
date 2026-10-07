@@ -196,6 +196,22 @@ describe("vectorRecall", () => {
 		expect(out).toEqual(["theme"]);
 	});
 
+	it("分类候选在 top-K 前过滤：选中分类排在全局 K 之后仍能召回", async () => {
+		const provider = makeMockProvider({ q: [1, 0, 0] });
+		const indexed: VectorIndex = {
+			ids: ["other-category", "selected-category", "selected-low"],
+			vectors: [
+				[1, 0, 0],
+				[0.9, 0.1, 0],
+				[0, 1, 0],
+			],
+			hash: "h",
+			model: "m1",
+		};
+		const out = await vectorRecall(provider, "q", indexed, 1, -1, new Set([1, 2]));
+		expect(out).toEqual(["selected-category"]);
+	});
+
 	it("空索引返回空", async () => {
 		const provider = makeMockProvider({ q: [1, 0, 0] });
 		const empty: VectorIndex = { ids: [], vectors: [], hash: "", model: "m1" };

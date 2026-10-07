@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import ChinesePluginMarketPlugin from "@app/plugin";
 import { Translator } from "@domain/catalog/translator";
 import { WorkerLocalBackend } from "@semantic/workers/worker-backend";
+import * as embedding from "@semantic/embedding";
 
 /**
  * 持久化层回归（审计 P0-1）。
@@ -204,6 +205,79 @@ describe("Plugin 持久化契约（P0 回归）", () => {
 			JSON.stringify({ "plugin-a": "row-a", "plugin-b": "old-b" }),
 		);
 		expect(flush).toHaveBeenCalledTimes(1);
+	});
+
+	it("构建期间 refresh 请求标脏，构建结束后仍会安排增量维护", async () => {
+		const { plugin } = makePlugin();
+		Object.assign(plugin as any, {
+			settings: { embeddingSource: "local" },
+			buildLocalIndexPromise: Promise.resolve(),
+			localIndexState: { status: "building", progress: 1, total: 2 },
+		});
+		(plugin as any).scheduleIndexRefresh("译文更新");
+		expect((plugin as any).indexRefreshDirty).toBe(true);
+
+		// 模拟当前构建 finally 清空 promise 后的下一次调度。
+		(plugin as any).buildLocalIndexPromise = null;
+		(plugin as any).localIndexState = { status: "done", progress: 2, total: 2 };
+		const build = vi.spyOn(plugin, "buildLocalIndex").mockResolvedValue();
+		(plugin as any).scheduleIndexRefresh("构建期间发生变更");
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect(build).toHaveBeenCalledWith(false);
+		build.mockRestore();
+	});
+
+	it("已有向量被替换且 partialIds 长度不变时仍触发 checkpoint", async () => {
+		const { plugin } = makePlugin();
+		const total = 512;
+		const plugins = Array.from({ length: total }, (_, i) => ({
+			id: `p-${i}`,
+			name: `P${i}`,
+			description: "desc",
+		}));
+		const model = embedding.embeddingIndexKey({ source: "local", localModel: "test-model" });
+		const prev = {
+			ids: plugins.map((p) => p.id),
+			vectors: plugins.map(() => [1, 0]),
+			hash: "old",
+			model,
+			perIdHash: Object.fromEntries(plugins.map((p) => [p.id, `old-${p.id}`])),
+		};
+		plugin.translator.setVectorIndex(prev);
+		Object.assign(plugin as any, {
+			settings: {
+				embeddingSource: "local",
+				embeddingLocalModel: "test-model",
+				embeddingLocalWasmPaths: "",
+				embeddingRemoteHost: "",
+			},
+			vectorIndexLoadPromise: Promise.resolve(),
+			localIndexUnloadRequested: false,
+		});
+		vi.spyOn(plugin as any, "getViewPlugins").mockReturnValue(plugins);
+		const save = vi.spyOn(plugin, "saveVectorIndex").mockResolvedValue();
+		const build = vi.spyOn(embedding, "buildVectorIndex").mockImplementation(
+			async (_provider, indexPlugins, indexModel, _prev, schema, opts) => {
+				const updates = new Map(indexPlugins.map((p) => [p.id, [0, 1] as number[]]));
+				const hashes = new Map(indexPlugins.map((p) => [p.id, `new-${p.id}`]));
+				(opts as embedding.VectorBuildOptions | undefined)?.onPartial?.(updates, hashes);
+				return {
+					ids: indexPlugins.map((p) => p.id),
+					vectors: indexPlugins.map(() => [0, 1]),
+					hash: "new",
+					model: indexModel,
+					categorySchemaVersion: schema,
+					perIdHash: Object.fromEntries(hashes),
+					buildStats: { embedded: total, reused: 0 },
+				};
+			},
+		);
+
+		await plugin.buildLocalIndex();
+		expect(build).toHaveBeenCalledTimes(1);
+		expect(save).toHaveBeenCalledTimes(2); // checkpoint + 构建完成后的最终保存
+		build.mockRestore();
+		save.mockRestore();
 	});
 
 	it("收藏筛选（favoriteFilter）改为会话级：不再持久化进 settings", async () => {

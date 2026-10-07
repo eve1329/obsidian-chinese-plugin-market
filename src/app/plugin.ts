@@ -3106,12 +3106,27 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	 *  增量语义由 buildVectorIndex 保证（perIdHash 指纹：只 embed 新增/内容或译文变化的条目，
 	 *  其余复用旧向量）；no-op 时 fieldsHash 快路零 embed、UI 无感。仅 local 模式生效。 */
 	private indexRefreshTimer: number | null = null;
+	/** 构建期间到达的刷新请求不能丢弃；当前构建完成后会再跑一次增量维护。 */
+	private indexRefreshDirty = false;
+	private indexRefreshDirtyReason = "构建期间发生变更";
 	scheduleIndexRefresh(reason: string): void {
 		if (this.settings.embeddingSource !== "local") return;
+		// buildLocalIndexPromise 覆盖了“正在等待索引加载”的早期阶段，
+		// localIndexState.status 覆盖了已经进入 embed 的阶段。两者任一成立都只标脏，
+		// 由当前构建 finally 统一安排下一次维护，避免刷新请求静默丢失。
+		if (this.buildLocalIndexPromise || this.localIndexState.status === "building") {
+			this.indexRefreshDirty = true;
+			this.indexRefreshDirtyReason = reason;
+			return;
+		}
 		if (this.indexRefreshTimer !== null) window.clearTimeout(this.indexRefreshTimer);
 		this.indexRefreshTimer = window.setTimeout(() => {
 			this.indexRefreshTimer = null;
-			if (this.localIndexState.status === "building") return; // 不叠构建
+			if (this.buildLocalIndexPromise || this.localIndexState.status === "building") {
+				this.indexRefreshDirty = true;
+				this.indexRefreshDirtyReason = reason;
+				return;
+			}
 			logger.debug(`[Chinese Plugin Market] 向量索引增量维护触发（${reason}）`);
 			void this.buildLocalIndex(false);
 		}, 30_000);
@@ -3276,11 +3291,11 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			};
 			publish();
 			const CHECKPOINT_INTERVAL = 512;
-			let checkpointAt = partialIds.length;
+			let embeddedSinceCheckpoint = 0;
 			let checkpointTail = Promise.resolve();
 			const scheduleCheckpoint = () => {
-				if (partialIds.length - checkpointAt < CHECKPOINT_INTERVAL) return;
-				checkpointAt = partialIds.length;
+				if (embeddedSinceCheckpoint < CHECKPOINT_INTERVAL) return;
+				embeddedSinceCheckpoint = 0;
 				checkpointTail = checkpointTail
 					.then(() => this.saveVectorIndex())
 					.catch((e) => logger.warn("[Chinese Plugin Market] partial 向量索引 checkpoint 失败：", e));
@@ -3288,6 +3303,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			const index = await buildVectorIndex(provider, indexPlugins, model, prevIdx, schemaVer, {
 				chunk: 128,
 				onPartial: (updates, hashes) => {
+				embeddedSinceCheckpoint += updates.size;
 					for (const [id, v] of updates) {
 						const pos = partialPos.get(id);
 						if (pos === undefined) {
@@ -3327,7 +3343,14 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 			logger.warn("[Chinese Plugin Market] 预建本地向量索引失败：", e);
 			done("error", msg);
 		} finally {
+			const rerunReason = this.indexRefreshDirty ? this.indexRefreshDirtyReason : null;
+			this.indexRefreshDirty = false;
 			this.buildLocalIndexPromise = null;
+			if (rerunReason && !this.localIndexUnloadRequested) {
+				// 当前 promise 已清空后再安排，确保 scheduleIndexRefresh 不把这次请求
+				// 再次识别成“正在构建”而只留下 dirty 标记。
+				this.scheduleIndexRefresh(rerunReason);
+			}
 		}
 		};
 		this.buildLocalIndexPromise = run();
