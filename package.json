@@ -46,7 +46,8 @@
   "pnpm": {
     "overrides": {
       "adm-zip": "0.6.1",
-      "sharp": "^0.35.4"
+      "sharp": "file:./stubs/sharp",
+      "onnxruntime-node": "file:./stubs/onnxruntime-node"
     }
   }
 }

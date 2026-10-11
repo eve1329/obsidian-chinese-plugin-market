@@ -1,0 +1,7 @@
+{
+	"name": "onnxruntime-node",
+	"version": "1.24.3",
+	"private": true,
+	"description": "Empty stub replacing onnxruntime-node. This plugin only runs in the browser (Obsidian renderer) and bundles onnxruntime-web; the Node runtime is never reachable, so the real package (and its global-agent -> roarr -> sprintf-js chain) is intentionally excluded from the dependency graph.",
+	"main": "index.js"
+}

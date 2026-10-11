@@ -1,0 +1,7 @@
+{
+	"name": "sharp",
+	"version": "0.35.4",
+	"private": true,
+	"description": "Empty stub replacing sharp. The bundler already stubs sharp at build time (esbuild nativeStubPlugin) because only text embeddings are used; the real native package is intentionally excluded from the dependency graph.",
+	"main": "index.js"
+}
