@@ -54,7 +54,17 @@ if (!localTag) {
 }
 
 // 4. 确认构建产物存在
-const assets = ["main.js", "manifest.json", "styles.css", "versions.json"];
+// 运行时资产必须与 sync.sh 的同步清单一致：缺 embedding-worker.bundle.js / sql-wasm.wasm /
+// ort-wasm-simd-threaded.jsep.wasm 会让分发版本的语义搜索静默不可用。
+const assets = [
+  "main.js",
+  "manifest.json",
+  "styles.css",
+  "versions.json",
+  "embedding-worker.bundle.js",
+  "sql-wasm.wasm",
+  "ort-wasm-simd-threaded.jsep.wasm",
+];
 for (const f of assets) {
   try {
     readFileSync(join(root, f));

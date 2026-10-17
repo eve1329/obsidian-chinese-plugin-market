@@ -39,6 +39,10 @@ export class FilterCache {
 	private _abandoned: AbandonedFilter = "all";
 	/** 上一次的 verdictFilter（踩坑原因筛选缓存失效判断） */
 	private _verdict: VerdictFilter = "all";
+	/** 上一次的 chineseEcoFilter（取消「中文生态」时必须使前缀缓存失效） */
+	private _chineseEco: ChineseEcoFilter = "all";
+	/** 上一次的 seriesFilter（取消「竹林/羽鳞系列」时必须使前缀缓存失效） */
+	private _series: SeriesFilter = "all";
 
 	/** 将 FilterResult 的回写值同步到缓存 */
 	sync(result: FilterResult): void {
@@ -56,6 +60,8 @@ export class FilterCache {
 		this._tried = result.nextFilterTried ?? "all";
 		this._abandoned = result.nextFilterAbandoned ?? "all";
 		this._verdict = result.nextFilterVerdict ?? "all";
+		this._chineseEco = result.nextFilterChineseEco ?? "all";
+		this._series = result.nextFilterSeries ?? "all";
 	}
 
 	/** 生成传给 filterAndSortPlugins 的快照字段 */
@@ -64,7 +70,8 @@ export class FilterCache {
 		| "lastFilterAuthor" | "lastFilterInstall"
 		| "lastFilterRecommendedOnly" | "lastFilterCategories"
 		| "lastFilterFavorites" | "lastFilterNewWithinDays" | "lastFilterUpdatedWithinDays" 		| "lastFilterMode"
-		| "lastFilterTried" | "lastFilterAbandoned" | "lastFilterVerdict"> {
+		| "lastFilterTried" | "lastFilterAbandoned" | "lastFilterVerdict"
+		| "lastFilterChineseEco" | "lastFilterSeries"> {
 		return {
 			lastFiltered: this._list,
 			lastFilterQuery: this._query,
@@ -80,6 +87,8 @@ export class FilterCache {
 			lastFilterTried: this._tried,
 			lastFilterAbandoned: this._abandoned,
 			lastFilterVerdict: this._verdict,
+			lastFilterChineseEco: this._chineseEco,
+			lastFilterSeries: this._series,
 		};
 	}
 
@@ -105,6 +114,8 @@ export class FilterCache {
 		this._tried = "all";
 		this._abandoned = "all";
 		this._verdict = "all";
+		this._chineseEco = "all";
+		this._series = "all";
 	}
 }
 
@@ -346,12 +357,16 @@ export interface FilterParams {
 	chineseEcoFilter?: ChineseEcoFilter;
 	/** 中文生态人工清单 id 集合 */
 	chineseEcoSet?: Set<string>;
+	/** 上一次的 chineseEcoFilter（缓存失效判断：取消「中文生态」时不得复用已收窄子集） */
+	lastFilterChineseEco?: ChineseEcoFilter;
 	/** 系列筛选："bamboo" 仅竹林中国系列 / "yulin" 仅羽鳞精选 / "all" 全部 */
 	seriesFilter?: SeriesFilter;
 	/** 竹林中国系列插件 id 集合（plugin-bamboo-series.json） */
 	bambooSeriesSet?: Set<string>;
 	/** 羽鳞精选插件 id 集合（plugin-yulin-picks.json） */
 	yulinPicksSet?: Set<string>;
+	/** 上一次的 seriesFilter（缓存失效判断） */
+	lastFilterSeries?: SeriesFilter;
 	/** 装过筛选："tried" 仅曾安装过 / "all" 全部 */
 	triedFilter?: TriedFilter;
 	/** 曾安装过的插件 id 集合（含已卸载） */
@@ -441,6 +456,10 @@ export interface FilterResult {
 	nextFilterNewWithinDays?: number | null;
 	nextFilterUpdatedWithinDays?: number | null;
 	nextFilterCategories?: string[];
+	/** 回写的 chineseEcoFilter（供下次缓存失效判断） */
+	nextFilterChineseEco?: ChineseEcoFilter;
+	/** 回写的 seriesFilter（供下次缓存失效判断） */
+	nextFilterSeries?: SeriesFilter;
 	/** 回写的搜索模式（供下次缓存复用判定：AI 子集不得被关键词模式复用） */
 	nextFilterMode: SearchMode;
 	/** 回写的 triedFilter */
@@ -483,6 +502,8 @@ export function filterAndSortPlugins(params: FilterParams): FilterResult {
 		lastFilterTried = "all",
 		lastFilterAbandoned = "all",
 		lastFilterVerdict = "all",
+		lastFilterChineseEco = "all",
+		lastFilterSeries = "all",
 	} = params;
 
 	const matchOpts: MatchOptions = {
@@ -513,6 +534,8 @@ export function filterAndSortPlugins(params: FilterParams): FilterResult {
 	let nextFilterTried: TriedFilter | undefined;
 	let nextFilterAbandoned: AbandonedFilter | undefined;
 	let nextFilterVerdict: VerdictFilter | undefined;
+	let nextFilterChineseEco: ChineseEcoFilter | undefined;
+	let nextFilterSeries: SeriesFilter | undefined;
 	let clearAiResult = false;
 
 	if ((searchMode === "ai" || searchMode === "local") && query) {
@@ -596,6 +619,11 @@ export function filterAndSortPlugins(params: FilterParams): FilterResult {
 			lastFilterVerdict === verdictFilter &&
 			lastFilterNewWithinDays === (newWithinDays ?? null) &&
 			lastFilterUpdatedWithinDays === (updatedWithinDays ?? null) &&
+			// 中文生态 / 系列同样必须参与失效判定：前缀复用只减不增，若漏判，
+			// 取消「中文生态 / 竹林系列 / 羽鳞精选」后会在上一次【已收窄的子集】上继续
+			// 过滤，「全部」列表将永久缺失未选中的插件（与台账三维度同一类问题）。
+			lastFilterChineseEco === (chineseEcoFilter ?? "all") &&
+			lastFilterSeries === (seriesFilter ?? "all") &&
 			sameCategories &&
 			(lastFilterQuery === "" || query.startsWith(lastFilterQuery));
 
@@ -627,6 +655,10 @@ export function filterAndSortPlugins(params: FilterParams): FilterResult {
 	nextFilterTried = triedFilter ?? "all";
 	nextFilterAbandoned = abandonedFilter ?? "all";
 	nextFilterVerdict = verdictFilter ?? "all";
+	// 中文生态 / 系列同样必须回写（同台账三维度）：否则上层缓存恒为 "all"，
+	// 取消筛选时 canReuse 判定成立，会在已收窄的子集上继续前缀过滤。
+	nextFilterChineseEco = chineseEcoFilter ?? "all";
+	nextFilterSeries = seriesFilter ?? "all";
 
 	// 应用排序。relevance 保持来源顺序（AI=rankedIds 序 / 本地=过滤序）；其余维度覆盖之。
 	// displayName 取译名（中文名优先）用于名称排序——通过 displayNameOf 回调就地计算，
@@ -674,6 +706,8 @@ export function filterAndSortPlugins(params: FilterParams): FilterResult {
 		nextFilterTried,
 		nextFilterAbandoned,
 		nextFilterVerdict,
+		nextFilterChineseEco,
+		nextFilterSeries,
 		nextFilterMode: searchMode,
 		clearAiResult,
 	};

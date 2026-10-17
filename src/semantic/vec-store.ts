@@ -83,6 +83,9 @@ export class SqliteVectorStore {
 				/malformed|not a database|disk image/i.test(msg)) {
 				logger.warn(`[Chinese Plugin Market] 向量库文件损坏，删除后重建空库: ${dbPath}`);
 				try { await adapter.delete(dbPath); } catch { /* 删除失败则保留原错误 */ }
+				// 覆盖引用前先关闭上一个实例：applySchema() 抛错时 store.db 已是一个
+				// 完整 Database，直接覆盖会让它的 WASM 堆内存永不回收。
+				try { store.db?.close(); } catch { /* 关闭失败不影响重建 */ }
 				store.db = new sql.Database();
 				store.applySchema();
 			} else {
@@ -248,6 +251,18 @@ export class SqliteVectorStore {
 		return this.revision;
 	}
 
+	/**
+	 * 触发一次写盘并吞掉失败（仅记日志）。
+	 * 直接用 `void this.flush()` 会在 adapter.write 失败（磁盘满/vault 锁定/移动端权限）
+	 * 时产生未处理的 Promise 拒绝；写盘失败不丢数据（mutationCount 未清零，
+	 * finally 会重新挂 idleTimer 重试），但必须避免 unhandledrejection 噪声。
+	 */
+	private flushQuietly(): void {
+		void this.flush().catch((e: unknown) => {
+			logger.warn("[Chinese Plugin Market] 向量库写盘失败：", e);
+		});
+	}
+
 	private touch(force = false): void {
 		this.revision++;
 		this.mutationCount++;
@@ -256,9 +271,9 @@ export class SqliteVectorStore {
 			this.idleTimer = null;
 		}
 		if (force || this.mutationCount >= MUTATION_THRESHOLD) {
-			void this.flush();
+			this.flushQuietly();
 		} else {
-			this.idleTimer = window.setTimeout(() => void this.flush(), IDLE_FLUSH_MS);
+			this.idleTimer = window.setTimeout(() => this.flushQuietly(), IDLE_FLUSH_MS);
 		}
 	}
 
@@ -302,9 +317,9 @@ export class SqliteVectorStore {
 						this.idleTimer = null;
 					}
 					if (this.mutationCount >= MUTATION_THRESHOLD) {
-						void this.flush();
+						this.flushQuietly();
 					} else {
-						this.idleTimer = window.setTimeout(() => void this.flush(), IDLE_FLUSH_MS);
+						this.idleTimer = window.setTimeout(() => this.flushQuietly(), IDLE_FLUSH_MS);
 					}
 				}
 			}

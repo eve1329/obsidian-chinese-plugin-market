@@ -35,9 +35,13 @@ jobs:
         run: npm test
 
       - name: 收集发布产物
+        # 必须包含运行时资产：embedding-worker.bundle.js（worker 源码，app 层按路径读取）、
+        # sql-wasm.wasm（SQLite 向量库）、ort-wasm-simd-threaded.jsep.wasm（ONNX 运行时）。
+        # 缺任一项会导致语义搜索在本地静默降级/不可用（与 sync.sh 的同步清单保持一致）。
         run: |
           mkdir -p dist
           cp main.js manifest.json styles.css versions.json dist/
+          cp embedding-worker.bundle.js sql-wasm.wasm ort-wasm-simd-threaded.jsep.wasm dist/
 
       - name: 为构建产物生成来源证明（build provenance / attestation）
         uses: actions/attest-build-provenance@v2
@@ -58,4 +62,5 @@ jobs:
           gh release create "$TAG" \
             --title "$TAG · CI 构建" \
             --notes "由 CI 自动构建并附构建来源证明（artifact attestations）。" \
-            dist/main.js dist/manifest.json dist/styles.css dist/versions.json
+            dist/main.js dist/manifest.json dist/styles.css dist/versions.json \
+            dist/embedding-worker.bundle.js dist/sql-wasm.wasm dist/ort-wasm-simd-threaded.jsep.wasm

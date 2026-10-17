@@ -112,8 +112,11 @@ export class DepGraph {
 		if (!s.installedIds.has(dep.id)) return "missing";
 		if (!s.enabledIds.has(dep.id)) return "disabled";
 		if (dep.minVersion) {
-			const local = s.installedVersions.get(dep.id) ?? "";
-			if (compareVersion(local, dep.minVersion) < 0) return "outdated";
+			const local = s.installedVersions.get(dep.id);
+			// 本地版本未知 ≠ 版本过低：manifest 缺 version 或视图层未采集时取到的是 undefined，
+			// 若按 "" 参与比较，compareVersion("", min) 恒为 -1，会把「未知」误判成 outdated，
+			// 进而被 blockingOf 列入未满足依赖、误报「依赖版本过低」。
+			if (local && compareVersion(local, dep.minVersion) < 0) return "outdated";
 		}
 		return "ok";
 	}

@@ -29,6 +29,10 @@ export interface PluginCredentials {
 	embeddingApiKey: string;
 	embeddingBaseURL: string;
 	selfHostedTranslators: { type: "deeplx" | "libretranslate"; baseUrl: string }[];
+	/** 百度机器翻译 appid（虽非密钥，但与 baiduKey 成对，一并隔离以免单独外泄配置） */
+	baiduAppId: string;
+	/** 百度机器翻译密钥（签名用，等同密钥） */
+	baiduKey: string;
 }
 
 /** 主 data.json 中应抽离到 credentials.json 的敏感字段键名（用于迁移/剥离）。 */
@@ -37,6 +41,9 @@ export const CREDENTIAL_KEYS: (keyof PluginCredentials)[] = [
 	"aiSearchApiKey", "aiSearchBaseURL",
 	"embeddingApiKey", "embeddingBaseURL",
 	"selfHostedTranslators",
+	// 百度翻译密钥：早前遗漏在白名单之外，导致配置百度翻译的用户保存设置后
+	// 密钥明文留在主 data.json（会随 vault 同步/备份外泄），与凭据隔离的设计目标相悖。
+	"baiduAppId", "baiduKey",
 ];
 
 /**
@@ -414,7 +421,9 @@ export class PluginStorage {
 				embeddingBaseURL: (parsed.embeddingBaseURL as string) ?? "",
 				selfHostedTranslators:
 					(parsed.selfHostedTranslators as PluginCredentials["selfHostedTranslators"]) ?? [],
-			};
+				baiduAppId: (parsed.baiduAppId as string) ?? "",
+				baiduKey: (parsed.baiduKey as string) ?? "",
+				};
 		} catch (e: unknown) {
 			logger.warn("[Chinese Plugin Market] 读取 credentials 失败：", e);
 			return null;

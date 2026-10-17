@@ -59,8 +59,14 @@ function addUpdateButton(ctx: ViewContext, row: HTMLElement, p: PluginInfo): voi
 		void (async () => {
 			if (updBtn.hasClass("pt-spin")) return;
 			updBtn.addClass("pt-spin");
-			await ctx.updatePlugin(p.id);
-			updBtn.removeClass("pt-spin");
+			// finally 兜底：updatePlugin 内部「更新后重检」的网络请求在 try 块之外，
+			// 一旦 reject，没有 finally 会导致按钮永久旋转，且被 pt-spin 防重入守卫
+			// 锁死、再也无法点击（只能切走页签重渲）。
+			try {
+				await ctx.updatePlugin(p.id);
+			} finally {
+				updBtn.removeClass("pt-spin");
+			}
 			ctx.refreshViewTabsBadge?.();
 			ctx.renderUpdatesList();
 		})();
@@ -114,8 +120,12 @@ function renderPinnedRow(ctx: ViewContext, row: HTMLElement, p: PluginInfo): voi
 		void (async () => {
 			if (unpinBtn.hasClass("pt-spin")) return;
 			unpinBtn.addClass("pt-spin");
-			await ctx.pinPluginVersion(p.id, null);
-			unpinBtn.removeClass("pt-spin");
+			// 同上：异常时必须撤掉旋转态，否则按钮被防重入守卫永久锁死
+			try {
+				await ctx.pinPluginVersion(p.id, null);
+			} finally {
+				unpinBtn.removeClass("pt-spin");
+			}
 			ctx.renderUpdatesList();
 		})();
 	});

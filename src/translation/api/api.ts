@@ -494,6 +494,14 @@ export async function callAITranslate(
 		const name = typeof parsed.name === "string" ? parsed.name.trim() : "";
 		const description = typeof parsed.description === "string" ? parsed.description.trim() : "";
 		if (!name) return null;
+		// 回显防护：LLM 未遵循指令（专有名词、小模型、被截断）时可能原样返回英文原文。
+		// 与其它 provider（Google / MyMemory / Transmart）的 unchanged 语义一致：两段都回显
+		// 才算「未翻译」，走降级而非成功。否则英文原文会被 solidifyAI 以 approved
+		// 固化进 aiDict 与 vault 笔记，跨会话永久污染且 clearCache() 清不掉。
+		const nameUnchanged = name.toLowerCase() === plugin.name.trim().toLowerCase();
+		const descUnchanged =
+			!description || description.toLowerCase() === plugin.description.trim().toLowerCase();
+		if (nameUnchanged && descUnchanged) return null;
 		return {
 			translatedName: name,
 			translatedDesc: description || plugin.description,

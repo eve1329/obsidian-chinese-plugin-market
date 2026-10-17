@@ -160,7 +160,18 @@ export async function tencentTranslate(
 			TargetText?: string;
 		};
 	}
-	const json = response.json as TencentTranslateResponse;
+	// 鉴权失败(401/403)、限流(429)、网关错误(5xx) 必须与成功区分：
+	// 上层会把返回值当作「翻译成功」写入缓存并晋升 approved，静默吞掉故障会
+	// 让覆盖率虚高、且故障长期不可见（熔断器还会记 success）。
+	if (typeof response.status === "number" && (response.status < 200 || response.status >= 300)) {
+		throw new Error(`腾讯云翻译 HTTP ${response.status}`);
+	}
+
+	const json = response.json as TencentTranslateResponse | null;
+
+	if (!json || typeof json !== "object") {
+		throw new Error("腾讯云翻译返回非对象响应");
+	}
 
 	if (json.Response?.Error) {
 		throw new Error(
@@ -168,5 +179,12 @@ export async function tencentTranslate(
 		);
 	}
 
-	return json.Response?.TargetText || text;
+	// 空译文不再用 `|| text` 兜成原文：那会让「没翻出来」看起来像「翻好了」。
+	// 抛错交由上层降级到其它来源或原文兜底（原文兜底由调用方显式决定）。
+	const target = json.Response?.TargetText;
+	if (typeof target !== "string" || target.length === 0) {
+		throw new Error("腾讯云翻译返回空译文");
+	}
+
+	return target;
 }

@@ -136,7 +136,9 @@ describe("AISearcher 降级健壮性", () => {
 
 		const result = await searcher.localSearch("query notes database", PLUGINS as any);
 
-		expect(result.rankFallback).toBe(true);
+		// 本地语义模式按设计不做 LLM 精排，不存在「精排失败降级」，
+		// rankFallback 应为 falsy（否则每次本地搜索都会被采样记成一次降级）。
+		expect(result.rankFallback).toBeFalsy();
 		expect(result.rankedIds.length).toBeGreaterThan(0);
 		// 关键词召回应命中 dataview（"database" 命中描述）
 		expect(result.rankedIds).toContain("dataview");

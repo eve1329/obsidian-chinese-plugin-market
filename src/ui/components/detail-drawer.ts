@@ -522,6 +522,14 @@ export class PluginDetailDrawer {
 	navigate(_pluginId: string, newInfo: PluginInfo, newResult: TranslateResult | undefined, newSimilar: SimilarCandidate[]) {
 		// 保存当前到历史栈
 		this._history.push({ info: this.info, result: this.result, similar: this.similar });
+		// 清理旧内容注册的监听器/定时器（与 refreshContent 一致）。
+		// 早前这里只 unload 了 renderComp：buildContent() 每次都会新增清理项（最典型是
+		// 头部高度的 ResizeObserver），不执行 _cleanupFns 会让它们继续 observe 已脱离
+		// 文档的 headBlock，每跳一次泄漏一个观察者 + 一整棵 detached DOM 子树。
+		this._cleanupFns.forEach((fn) => fn());
+		this._cleanupFns = [];
+		this._journalDispose?.();
+		this._journalDispose = undefined;
 		// 释放旧 README
 		this.renderComp?.unload();
 		this.renderComp = null;

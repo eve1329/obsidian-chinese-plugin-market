@@ -309,6 +309,43 @@ async function fetchReleaseAsset(
 	return { ok: false, text: "", url: "" };
 }
 
+/** 插件 id 写盘安全白名单（与 Obsidian 插件 id 约定一致，禁分隔符与 ..） */
+const SAFE_ID_RE = /^[A-Za-z0-9._-]+$/;
+/** manifest 入口文件白名单：只允许当前目录下的 .js */
+const SAFE_MAIN_RE = /^[A-Za-z0-9._-]+\.js$/;
+
+/**
+ * 校验「写盘目标」是否安全，阻断路径穿越。
+ *
+ * manifest 完全来自远端（GitHub raw，或用户配置的 mirror.customBase 镜像），属不可信输入：
+ * 若 id / main 含 `..` 或路径分隔符，拼进 adapter 路径后可写到 plugins/ 目录之外，
+ * 而卸载侧的 rmdir(dir, true) 会递归删除越权目录。规则与 direct-install 的白名单保持一致。
+ */
+export function isSafeInstallTarget(
+	pluginId: unknown,
+	manifest?: { id?: unknown; main?: unknown } | null,
+): boolean {
+	if (
+		typeof pluginId !== "string" ||
+		!SAFE_ID_RE.test(pluginId) ||
+		pluginId.startsWith(".") ||
+		pluginId.includes("..")
+	) {
+		return false;
+	}
+	if (!manifest) return true;
+	// 远端 manifest 的 id 必须与本地列表一致，否则写盘目录与内容不匹配
+	if (typeof manifest.id === "string" && manifest.id !== pluginId) return false;
+	const main = manifest.main;
+	if (main != null) {
+		if (typeof main !== "string") return false;
+		const trimmed = main.trim();
+		// 空串走默认 "main.js"；非空则必须匹配白名单
+		if (trimmed && !SAFE_MAIN_RE.test(trimmed)) return false;
+	}
+	return true;
+}
+
 /**
  * 一键安装插件。
  * @param plugin 要安装的插件
@@ -323,6 +360,11 @@ export async function installCommunityPlugin(
 	// 1. 前置校验
 	if (!plugin.repo) {
 		return fallbackToMarket(ctx, plugin, t("notice.install.noRepo"));
+	}
+	// 路径穿越防护：id 会被拼进插件目录路径（写盘 / 卸载 rmdir 均不可逆）
+	if (!isSafeInstallTarget(plugin.id, null)) {
+		logger.warn("[Chinese Plugin Market] 拒绝安装：插件 id 不合法", plugin.id);
+		return fallbackToMarket(ctx, plugin, t("directInstall.badManifest"));
 	}
 	if (ctx.installedIds.has(plugin.id)) {
 		new Notice(t("notice.install.alreadyInstalled"));
@@ -341,6 +383,11 @@ export async function installCommunityPlugin(
 	const manifest = await downloadFullManifest(plugin.repo, mirror);
 	if (!manifest) {
 		return fallbackToMarket(ctx, plugin, t("notice.install.manifestFail"));
+	}
+	// 远端 manifest 的 id / main 会直接参与路径拼接，必须复核（main 决定写入的文件名）
+	if (!isSafeInstallTarget(plugin.id, manifest)) {
+		logger.warn("[Chinese Plugin Market] 拒绝安装：远端 manifest 不合法", plugin.id);
+		return fallbackToMarket(ctx, plugin, t("directInstall.badManifest"));
 	}
 
 	// 3. 准备目录
@@ -793,6 +840,12 @@ export async function uninstallCommunityPlugin(
 	// 2. 删除磁盘目录
 	if (typeof adapter.rmdir !== "function") {
 		new Notice(t("card.uninstall.fail", { name: plugin.name, reason: "adapter.rmdir 不可用" }));
+		return false;
+	}
+	// 递归删除不可逆：id 不合法时绝不拼路径（防越权删除 plugins/ 之外的目录）
+	if (!isSafeInstallTarget(plugin.id, null)) {
+		logger.warn("[Chinese Plugin Market] 拒绝卸载：插件 id 不合法", plugin.id);
+		new Notice(t("card.uninstall.fail", { name: plugin.name, reason: "插件 id 不合法" }));
 		return false;
 	}
 	const dir = `${ctx.app.vault.configDir}/plugins/${plugin.id}`;

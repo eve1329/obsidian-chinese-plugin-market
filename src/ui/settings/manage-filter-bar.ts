@@ -111,7 +111,15 @@ export class ManageFilterBar {
 		this.initialGroup = state.group ?? GROUP_ALL;
 		// dropdown 若已填充选项（重建前已挂载），立即套用恢复的分组；
 		// 否则留给首次 updateGroups 在填充选项后按 initialGroup 选中
-		if (this.groupDropdown.selectEl.querySelector(`option[value="${this.initialGroup}"]`)) {
+		// 分组名由用户通过 PromptModal 自由输入并持久化，可能含引号/反斜杠。
+		// 直接内插进属性选择器会生成非法选择器、querySelector 抛 SyntaxError 并中断
+		// 整个增强流程。这里改为遍历 options 逐个比较 value：既无选择器解析，
+		// 也不存在注入面（且不依赖 CSS.escape，jsdom/测试环境同样可用）。
+		const wanted = this.initialGroup;
+		const has = Array.from(this.groupDropdown.selectEl.options).some(
+			(opt) => opt.value === wanted,
+		);
+		if (has) {
 			this.groupDropdown.setValue(this.initialGroup);
 		}
 	}

@@ -88,8 +88,17 @@ export function detectDeps(input: DetectInput): DepEdge[] {
 		for (const n of names) {
 			for (const r of README_STRONG) {
 				if (!compileRule(r.pattern, n).test(readme)) continue;
-				// 顺带抓「requires Dataview 0.5.0」这种带版本号的写法
-				const withVer = new RegExp(`${r.pattern.replace("{{DEP}}", "([0-9][0-9.]*)")}`, "i").exec(readme);
+				// 顺带抓「requires Dataview 0.5.0」这种带版本号的写法。
+				// 注意：必须【保留插件名】再追加版本捕获。早前实现把 {{DEP}} 整体替换成
+				// 版本捕获组，插件名从正则里消失，等价于 /requires?\s+([0-9][0-9.]*)/i——
+				// 既抓不到「requires Dataview 0.5.0」（\s+ 后是名字不是数字），
+				// 又会误抓 README 里任意位置的「requires 1.4.0」（通常是 Obsidian 主程序版本），
+				// 导致 minVersion 被挂成错误值、依赖被误判 outdated。
+				const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				const withVer = new RegExp(
+					`${r.pattern.replace("{{DEP}}", escaped + "\\s*(?:v|version)?\\s*([0-9][0-9.]*)")}`,
+					"i",
+				).exec(readme);
 				consider({
 					source: r.source,
 					confidence: r.confidence,

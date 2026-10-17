@@ -740,7 +740,9 @@ export class AISearcher {
 				...this.buildExplainability(intent.recallQuery, vectorScores, localScores, fuzzyScores),
 				matchDiagnostics,
 			};
-			const result = { rankedIds: fusedIds, rankFallback: true, ...exp };
+			// 本地语义模式按设计【不做】LLM 精排（见本函数上方注释），不存在「精排失败降级」，
+			// 硬编码 true 会把每一次本地搜索都记成降级，污染采样与评测数据。
+			const result = { rankedIds: fusedIds, rankFallback: false, ...exp };
 			this.saveMatchDiagnostics(query, "local", result.rankedIds, allPlugins, matchDiagnostics);
 			return result;
 		} finally {
