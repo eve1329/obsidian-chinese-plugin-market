@@ -33,8 +33,8 @@ export function captureFocus(container: HTMLElement): FocusToken | null {
 	return {
 		tag: el.tagName.toLowerCase(),
 		// 用 Obsidian 的 instanceOf（跨窗口安全，避免 iframe / 不同 realm 下 instanceof 失效）；
-		// 它非 TS 类型守卫，故收窄时显式断言到 HTMLInputElement 再取 type。
-		type: el.instanceOf(HTMLInputElement) ? (el as HTMLInputElement).type : undefined,
+		// 它本身就是类型守卫：条件为真时 el 已收窄为 HTMLInputElement，可直接取 type。
+		type: el.instanceOf(HTMLInputElement) ? el.type : undefined,
 		idAttr,
 		idValue: idAttr ? el.getAttribute(idAttr) ?? undefined : undefined,
 		action: el.getAttribute("data-action") ?? undefined,
