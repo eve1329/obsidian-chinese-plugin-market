@@ -724,6 +724,13 @@ export interface EmptyStateInput {
 	favoriteFilter?: FavoriteFilter;
 	/** 是否已配置 AI API Key（用于判断能否推荐 AI 搜索桥接） */
 	hasAIKey: boolean;
+	/**
+	 * 当前是否有任何生效中的筛选维度。
+	 * 由视图层的单一事实来源（active-filters）派生后传入，避免域层再维护一份
+	 * 维度清单 —— 那份清单曾漏掉中文生态 / 系列 / 新上线 / 更新四类，
+	 * 导致空态的「清除筛选」按钮该出现时不出现。
+	 */
+	hasActiveFilters?: boolean;
 	/** 原始查询词（用于桥接启发式，如 keyword→AI / AI→keyword） */
 	_query?: string;
 }
@@ -780,8 +787,11 @@ export function resolveEmptyState(input: EmptyStateInput): EmptyState {
 	}
 
 	const activeFavorite = favoriteFilter ?? "all";
+	// showClearAction = 有可清除的东西（搜索词 / 任一筛选维度）。
+	// 原有的 sourceFilter / installFilter / favoriteFilter 三项判定保留（回归锁死点），
+	// 再叠加视图层传入的 hasActiveFilters 覆盖其余全部维度。
 	const showClearAction =
-		hasQuery || sourceFilter !== "all" || installFilter === "installed" || installFilter === "enabled" || installFilter === "installedNotEnabled" || activeFavorite !== "all";
+		hasQuery || input.hasActiveFilters === true || sourceFilter !== "all" || installFilter === "installed" || installFilter === "enabled" || installFilter === "installedNotEnabled" || activeFavorite !== "all";
 
 	return { titleKey, hintKey, showClearAction, bridgeAction };
 }

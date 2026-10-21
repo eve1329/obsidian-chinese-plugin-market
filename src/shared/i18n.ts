@@ -969,6 +969,11 @@ export const STRINGS = {
 	"filter.active.series.yulin": { zh: "羽鳞精选" },
 	"filter.active.new": { zh: "新上线：{value}" },
 	"filter.active.updated": { zh: "更新：{value}" },
+	"filter.active.recommended": { zh: "官方推荐" },
+	"filter.active.author": { zh: "作者：{value}" },
+	"filter.active.tried": { zh: "装过的插件" },
+	"filter.active.abandoned": { zh: "已弃用" },
+	"filter.active.verdict": { zh: "踩坑原因：{value}" },
 	"filter.active.clear": { zh: "清除该筛选" },
 
 	// 已装插件管理（增强原生「设置 → 社区插件」页）

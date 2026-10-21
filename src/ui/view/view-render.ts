@@ -15,6 +15,7 @@ import { assessHealth } from "@domain/recommend/health";
 import { setListState } from "@ui/dom/list-state";
 import { q, toHTMLElement } from "@ui/dom/dom";
 import { handleToggleEnabled } from "@ui/view/view-cards";
+import { activeFilters, activeFilterSignature, clearAllFilters } from "@ui/view/active-filters";
 import type { ViewContext } from "@ui/view/view-context";
 import { LAYOUT } from "@shared/constants";
 import { requestIdle } from "@shared/platform";
@@ -48,25 +49,16 @@ export function renderPluginList(ctx: ViewContext, preserveScroll = false) {
 		// 轻量签名（长度 + 首尾 id）替代原先 filtered.map(id).join(",") 的 O(n) 长字符串分配，
 		// 每帧渲染省一次 5617 个 id 的拼接；排序键显式纳入 filterState，保证排序变化仍被捕捉
 		// （同一筛选 + 同一排序键下结果为确定性序列，首尾 id + 长度即可唯一标识）。
-		// 签名必须覆盖【所有】参与过滤的维度。早前只编码了 5 个，而 runFilterPipeline
-		// 实际传了 15+ 个参数 —— 漏维时这些筛选改变后签名不变、守卫命中直接 return，
-		// 表现为「点了筛选但列表一张卡都没换」（概率性触发，最难复现也最难自查）。
+		// 签名必须覆盖【所有】参与过滤的维度。早前只编码 5 个，而 runFilterPipeline 实际传了
+		// 15+ 个参数 —— 漏维时这些筛选改变后签名不变、守卫命中直接 return，表现为
+		// 「点了筛选但列表一张卡都没换」（概率性触发，最难复现也最难自查）。
+		//
+		// 现在筛选部分直接由 active-filters 描述符派生：新增维度时签名自动纳入，
+		// 不再依赖视图层手工维护清单（那正是过去反复漏维的根因）。
 		const filterState =
-			ctx.sourceFilter + "\u0000" + ctx.installFilter + "\u0000" +
+			activeFilterSignature(ctx) + "\u0000" +
 			(ctx.sortFavoritesFirst ? "1" : "0") + "\u0000" +
-			(ctx.recommendedOnly ? "1" : "0") + "\u0000" +
-			(ctx.authorFilter ?? "") + "\u0000" +
-			ctx.selectedCategories.join(",") + "\u0000" +
-			ctx.sortBy + "\u0000" +
-			// ↓ 此前遗漏的维度（与 runFilterPipeline 入参对齐）
-			ctx.favoriteFilter + "\u0000" +
-			ctx.chineseEcoFilter + "\u0000" +
-			ctx.seriesFilter + "\u0000" +
-			ctx.triedFilter + "\u0000" +
-			ctx.abandonedFilter + "\u0000" +
-			ctx.verdictFilter + "\u0000" +
-			String(ctx.newWithinDays ?? "") + "\u0000" +
-			String(ctx.updatedWithinDays ?? "");
+			ctx.sortBy;
 		const listSig =
 			filtered.length + ":" +
 			(filtered[0]?.id ?? "") + ":" +
@@ -447,6 +439,9 @@ export function renderWindow(ctx: ViewContext, _opts?: { measure?: boolean }) {
 				sourceFilter: ctx.sourceFilter,
 				installFilter: ctx.installFilter,
 				favoriteFilter: ctx.favoriteFilter,
+				// 「是否有生效筛选」由视图层单一事实来源派生后传入，
+				// 避免域层再维护一份维度清单（曾漏 4 类导致按钮该出不出）
+				hasActiveFilters: activeFilters(ctx).length > 0,
 				hasAIKey: ctx.settings.aiSearchEnabled && !!ctx.settings.aiSearchApiKey,
 				_query: ctx.searchQuery,
 			});
@@ -462,20 +457,12 @@ export function renderWindow(ctx: ViewContext, _opts?: { measure?: boolean }) {
 					const input = toHTMLElement(ctx.contentEl.querySelector(".pt-search-input"), HTMLInputElement);
 					if (input) { input.value = ""; }
 					ctx.searchQuery = "";
-					ctx.sourceFilter = "all";
-					ctx.installFilter = "all";
-					ctx.recommendedOnly = false;
-					ctx.settings.sourceFilter = "all";
-					void ctx.saveSettings();
-					// 同步 UI 状态
-					ctx.contentEl.querySelectorAll(".pt-filter").forEach((el) => {
-						el.setAttribute("aria-pressed", "false");
-					});
-					// 来源/安装/收藏已是胶囊：先全部复位 .pt-filter，再由 updateFacetVisibility 钩子按真实状态刷新选中态
-					ctx.updateFacetVisibility();
+					// 搜索词 + 全部筛选维度，走单一入口 clearAllFilters。
+					// 此前这里只清 4 个维度，却把所有胶囊 aria-pressed 置 false ——
+					// 列表依然 0 条、胶囊看起来没选中，界面说谎；用户只能靠重启恢复。
+					clearAllFilters(ctx);
 					const clearBtn = q(ctx.contentEl, ".pt-search-clear");
 					if (clearBtn) clearBtn.setCssStyles({ display: "none" });
-					ctx.scheduleRender();
 				});
 			}
 			// 跨模式搜索桥接：当前模式结果为空时建议切换到另一模式

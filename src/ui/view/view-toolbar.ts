@@ -19,6 +19,13 @@ import type { ViewContext, ViewTab } from "@ui/view/view-context";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 import { refreshOutdated } from "@ui/view/view-data";
 import { createUpdateProgressLayer } from "@ui/components/update-progress";
+import {
+	NEW_WINDOWS,
+	NEW_LABELS,
+	UPD_OPTIONS,
+	updValue,
+	clearAllFilters,
+} from "@ui/view/active-filters";
 
 /**
  * 跨工具栏构建块与 loadAndRender 尾部共享的可变状态。
@@ -1015,10 +1022,17 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 
 		// 统一刷新入口：清空 / 模式切换 / 活跃 chips ✕ 等任意筛选状态变化后，
 		// 由 updateFacetVisibility 钩子调用，保证三行胶囊选中态与状态始终一致。
+		// 全量胶囊态同步。此前只同步了来源/安装/收藏三行，导致中文生态、系列、上线、更新
+		// 这四个胶囊在「清除筛选」后视觉态不更新（看起来仍选中）。现在凡是新增胶囊，
+		// 都必须在这里登记，否则它的选中态会与真实状态脱节。
 		syncFilterChips = () => {
 			updateSourceToggles();
 			updateInstallToggles();
 			updateFavToggles();
+			updateEcoToggle();
+			updateSeriesToggles();
+			updateNewToggle();
+			updateUpdToggle();
 		};
 
 	// ── 生态筛选（当前实现 = 中文生态；维度可扩展为其它生态） ──
@@ -1071,9 +1085,7 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 	newRow.createSpan({ cls: "pt-facet-label", text: "上线" });
 	const newChip = newRow.createDiv({ cls: "pt-facet-chips" });
 	// 「上线」过滤：无 "全部" 选项，默认不过滤；点窗口胶囊激活，再点同一胶囊取消
-	const NEW_WINDOWS = [1, 3, 7, 30, 90, 365];
-	const NEW_LABELS = ["24h", "3天", "7天", "30天", "90天", "1年"];
-	// pt-toggle-new：供顶部「筛选中」chips 的 ✕ 清除时精确定位并复位胶囊态
+	// （NEW_WINDOWS / NEW_LABELS 已上移至 active-filters，与 chips 共用同一份口径）
 	const newToggles = NEW_WINDOWS.map((_, i) =>
 		newChip.createEl("button", { cls: "pt-filter pt-toggle-new", text: NEW_LABELS[i] })
 	);
@@ -1099,14 +1111,7 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 	updRow.createSpan({ cls: "pt-facet-label", text: "更新" });
 	const updChip = updRow.createDiv({ cls: "pt-facet-chips" });
 	// 正向「近 N 天内有更新」与反向「超过 N 天未更新」两组；点胶囊激活，再点同一胶囊取消
-	const UPD_OPTIONS = [
-		{ days: 30, dir: "within", label: "30天内有更新" },
-		{ days: 90, dir: "within", label: "90天内有更新" },
-		{ days: 365, dir: "within", label: "1年内有更新" },
-		{ days: 365, dir: "beyond", label: "超1年未更新" },
-		{ days: 730, dir: "beyond", label: "超2年未更新" },
-	] as const;
-	const updValue = (o: (typeof UPD_OPTIONS)[number]) => (o.dir === "within" ? o.days : -o.days);
+	// （UPD_OPTIONS / updValue 已上移至 active-filters）
 	const POSITIVE_COUNT = UPD_OPTIONS.filter((o) => o.dir === "within").length;
 	const updToggles: HTMLElement[] = [];
 	const updateUpdToggle = () => {
@@ -1139,33 +1144,13 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 			attr: { "aria-label": "重置所有筛选条件" },
 		});
 		resetBtn.addEventListener("click", () => {
-			ctx.sourceFilter = "all";
-			ctx.settings.sourceFilter = "all";
-			void ctx.saveSettings();
-			ctx.selectedCategories = [];
+			// 单一入口：由 active-filters 描述符驱动，自动覆盖全部维度。
+			// 此前这里手工逐项赋值，结果漏掉 装过 / 已弃用 / 踩坑原因 / 官方推荐 四个维度，
+			// 且每个维度各自调一次 update*Toggle + 一次 updateFacetVisibility + 一次 scheduleRender。
+			clearAllFilters(ctx);
+			// 分类 chips 与作者 facet 的选中态由 active-filters 的 clear() 内部各自刷新；
+			// 这里再显式刷一次分类 chips，确保空列表时也能复位。
 			renderChips();
-			ctx.authorFilter = null;
-			ctx.installFilter = "all";
-			ctx.favoriteFilter = "all";
-			// 重置中文生态筛选
-			ctx.chineseEcoFilter = "all";
-			updateEcoToggle();
-			// 重置系列筛选
-			ctx.seriesFilter = "all";
-			updateSeriesToggles();
-			// 重置踩坑原因筛选（保留兜底：即便 UI 移除 verdict tag，重置时仍置 all）
-			ctx.verdictFilter = "all";
-			// 重置新上线 + 近期更新筛选
-			ctx.newWithinDays = null;
-			ctx.settings.newWithinDays = null;
-			ctx.updatedWithinDays = null;
-			ctx.settings.updatedWithinDays = null;
-			updateNewToggle();
-			updateUpdToggle();
-			ctx.renderAuthorFacet();
-			// 同步顶部「筛选中」chips、select 下拉文案与重置按钮高亮态（仅 scheduleRender 不会触发）
-			ctx.updateFacetVisibility();
-			ctx.scheduleRender();
 		});
 
 		// 折叠交互

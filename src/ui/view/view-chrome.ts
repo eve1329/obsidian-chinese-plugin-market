@@ -13,8 +13,8 @@ import { setListState } from "@ui/dom/list-state";
 import { isAIMode, isKeywordMode } from "@domain/search/search-mode";
 import { q, appendSVG } from "@ui/dom/dom";
 import type { ViewContext } from "@ui/view/view-context";
-import type { InstallFilter, FavoriteFilter } from "@domain/filter/filter";
 import { buildToolbar, alignFacetLabels, type ToolbarState } from "@ui/view/view-toolbar";
+import { activeFilters, clearOneFilter } from "@ui/view/active-filters";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 import { LAYOUT } from "@shared/constants";
 import { setIcon } from "obsidian";
@@ -227,26 +227,11 @@ export function updateFacetVisibility(ctx: ViewContext) {
 		if (ctx.catRowEl) ctx.catRowEl.setCssStyles({ display: showCat ? "" : "none" });
 		if (ctx.authorRowEl) ctx.authorRowEl.setCssStyles({ display: showAuthor ? "" : "none" });
 
-		// 重置按钮状态反馈：有任何筛选激活时高亮，让用户一眼知道「可以清空」
+		// 重置按钮状态反馈：有任何筛选激活时高亮，让用户一眼知道「可以清空」。
+		// 直接由 active-filters 描述符派生，不再手工罗列维度（曾漏 7 项）。
 		const resetBtn = q(ctx.contentEl, ".pt-toolbar-reset--inline");
 		if (resetBtn) {
-			const hasActive =
-				ctx.sourceFilter !== "all" ||
-				ctx.selectedCategories.length > 0 ||
-				ctx.authorFilter !== null ||
-				ctx.installFilter !== "all" ||
-				ctx.favoriteFilter !== "all" ||
-				// 补齐此前遗漏的 7 个维度。漏判的后果：这些筛选生效时「重置筛选」不高亮、
-				// 活跃 chips 区空白，用户无从察觉列表为何变少；而 newWithinDays /
-				// updatedWithinDays / sourceFilter 是持久化的，重启后列表凭空变少更无从查证。
-				ctx.chineseEcoFilter !== "all" ||
-				ctx.seriesFilter !== "all" ||
-				ctx.triedFilter !== "all" ||
-				ctx.abandonedFilter !== "all" ||
-				ctx.verdictFilter !== "all" ||
-				ctx.newWithinDays !== null ||
-				ctx.updatedWithinDays !== null;
-			resetBtn.classList.toggle("is-active", hasActive);
+			resetBtn.classList.toggle("is-active", activeFilters(ctx).length > 0);
 		}
 
 	// 兜底：JS 强制统一所有 facet 标签列宽，保证多行标签左缘严格对齐。
@@ -259,9 +244,12 @@ export function updateFacetVisibility(ctx: ViewContext) {
 
 /**
  * 活跃筛选条件常驻 chips：筛选面板收起后，用户仍能在搜索行下方看到
- * 当前生效的筛选（来源 / 分类 / 安装 / 作者），并可单独 ✕ 移除。
+ * 当前生效的全部筛选，并可单独 ✕ 移除。
  * 解决「隐藏状态」反模式——尤其 sourceFilter 持久化后，重启列表莫名变少却无任何可见提示。
- * 由 updateFacetVisibility 末统一调用，覆盖所有筛选变更路径（来源/安装点击、分类/作者 toggle、reset、模式切换）。
+ *
+ * 维度清单来自 active-filters（单一事实来源），本函数只负责 DOM 呈现；
+ * 「有哪些维度生效」不再由此处维护，新增维度只需改 active-filters。
+ * 由 updateFacetVisibility 末统一调用，覆盖所有筛选变更路径。
  */
 export function renderActiveFilters(ctx: ViewContext) {
 	const header = q(ctx.contentEl, ".pt-header");
@@ -275,175 +263,14 @@ export function renderActiveFilters(ctx: ViewContext) {
 	}
 	box.empty();
 
-	// 收集活跃条件（与 updateFacetVisibility 的 hasActive 判定保持一致）
-	const chips: { text: string; onClear: () => void }[] = [];
-
-	if (ctx.sourceFilter !== "all") {
-		const label = ctx.t(`settings.prefs.sourceFilter.${ctx.sourceFilter}` as I18nKey);
-		chips.push({
-			text: ctx.t("filter.active.source", { value: label }),
-			onClear: () => {
-				ctx.sourceFilter = "all";
-				ctx.settings.sourceFilter = "all";
-				void ctx.saveSettings();
-				ctx.contentEl.querySelectorAll(".pt-source-filters .pt-filter").forEach((el) => {
-					el.setAttribute("aria-pressed", (el as HTMLElement).dataset.value === "all" ? "true" : "false");
-				});
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender();
-			},
-		});
-	}
-
-	if (ctx.installFilter !== "all") {
-		const currentInstall = ctx.installFilter;
-		const installLabelMap: Record<InstallFilter, string> = {
-			all: "",
-			installed: "已安装",
-			enabled: "已启动",
-			installedNotEnabled: "已安装未启动",
-		};
-		const installClsMap: Record<InstallFilter, string> = {
-			all: "",
-			installed: ".pt-toggle-uninstalled",
-			enabled: ".pt-toggle-enabled",
-			installedNotEnabled: ".pt-toggle-installed-off",
-		};
-		chips.push({
-			text: installLabelMap[currentInstall],
-			onClear: () => {
-				ctx.installFilter = "all";
-				const t = q(ctx.contentEl, installClsMap[currentInstall]);
-				if (t) {
-					t.setAttribute("aria-pressed", "false");
-					t.setText(installLabelMap[currentInstall]);
-				}
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender();
-			},
-		});
-	}
-
-	if (ctx.favoriteFilter !== "all") {
-		const currentFav = ctx.favoriteFilter;
-		const favLabelMap: Record<FavoriteFilter, string> = {
-			all: "",
-			favorited: "已收藏",
-			unfavorited: "未收藏",
-		};
-		const favClsMap: Record<FavoriteFilter, string> = {
-			all: "",
-			favorited: ".pt-toggle-favorites",
-			unfavorited: ".pt-toggle-unfavorites",
-		};
-		chips.push({
-			text: favLabelMap[currentFav],
-			onClear: () => {
-				ctx.favoriteFilter = "all";
-				const t = q(ctx.contentEl, favClsMap[currentFav]);
-				if (t) {
-					t.setAttribute("aria-pressed", "false");
-					t.setText(favLabelMap[currentFav]);
-				}
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender();
-			},
-		});
-	}
-
-	for (const cat of ctx.selectedCategories) {
-		chips.push({
-			text: ctx.t("filter.active.category", { value: cat }),
-			onClear: () => {
-				const idx = ctx.selectedCategories.indexOf(cat);
-				if (idx >= 0) ctx.selectedCategories.splice(idx, 1);
-				const chip = q(ctx.contentEl, `.pt-facet-chip[data-cat="${CSS.escape(cat)}"]`);
-				if (chip) chip.setAttribute("aria-pressed", "false");
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender();
-			},
-		});
-	}
-
-	// ── 中文生态 ──
-	// 以下四类此前完全缺席：收起筛选面板后列表凭空变少却无任何常驻提示，
-	// 且 newWithinDays / updatedWithinDays 是持久化的，重启后更无从查证。
-	if (ctx.chineseEcoFilter !== "all") {
-		chips.push({
-			text: ctx.t("filter.active.eco"),
-			onClear: () => {
-				ctx.chineseEcoFilter = "all";
-				const t = q(ctx.contentEl, ".pt-toggle-eco");
-				if (t) t.setAttribute("aria-pressed", "false");
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender(true);
-			},
-		});
-	}
-
-	// ── 系列（竹林中国 / 羽鳞精选）──
-	if (ctx.seriesFilter !== "all") {
-		const isBamboo = ctx.seriesFilter === "bamboo";
-		chips.push({
-			text: ctx.t(isBamboo ? "filter.active.series.bamboo" : "filter.active.series.yulin"),
-			onClear: () => {
-				ctx.seriesFilter = "all";
-				ctx.contentEl.querySelectorAll(".pt-toggle-series").forEach((el) => {
-					el.setAttribute("aria-pressed", "false");
-				});
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender(true);
-			},
-		});
-	}
-
-	// ── 新上线窗口 ──
-	if (ctx.newWithinDays !== null) {
-		const NEW_WINDOWS = [1, 3, 7, 30, 90, 365];
-		const NEW_LABELS = ["24h", "3天", "7天", "30天", "90天", "1年"];
-		const idx = NEW_WINDOWS.indexOf(ctx.newWithinDays);
-		const label = idx >= 0 ? NEW_LABELS[idx] : String(ctx.newWithinDays);
-		chips.push({
-			text: ctx.t("filter.active.new", { value: label }),
-			onClear: () => {
-				ctx.newWithinDays = null;
-				ctx.settings.newWithinDays = null;
-				void ctx.saveSettings();
-				ctx.contentEl.querySelectorAll(".pt-toggle-new").forEach((el) => {
-					el.setAttribute("aria-pressed", "false");
-				});
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender(true);
-			},
-		});
-	}
-
-	// ── 更新时间窗口 ──
-	if (ctx.updatedWithinDays !== null) {
-		const v = ctx.updatedWithinDays;
-		const UPD_LABEL: Record<number, string> = {
-			30: "30天内有更新",
-			90: "90天内有更新",
-			365: "1年内有更新",
-			[-365]: "超1年未更新",
-			[-730]: "超2年未更新",
-		};
-		const label =
-			UPD_LABEL[v] ?? (v > 0 ? `近 ${v} 天内有更新` : `超 ${Math.abs(v)} 天未更新`);
-		chips.push({
-			text: ctx.t("filter.active.updated", { value: label }),
-			onClear: () => {
-				ctx.updatedWithinDays = null;
-				ctx.settings.updatedWithinDays = null;
-				void ctx.saveSettings();
-				ctx.contentEl.querySelectorAll(".pt-toggle-upd").forEach((el) => {
-					el.setAttribute("aria-pressed", "false");
-				});
-				ctx.updateFacetVisibility();
-				ctx.scheduleRender(true);
-			},
-		});
-	}
+	// 活跃筛选 chips 全部由单一事实来源 active-filters 派生。
+	// 此前这里手工收集 4 类，而 hasActive 判 5 项、空态清除按钮清 4 项、渲染签名编 5 项，
+	// 四处口径各自漂移；现在 chips / 重置高亮 / 空态清除 / 渲染签名共用同一份清单。
+	const filters = activeFilters(ctx);
+	const chips = filters.map((f) => ({
+		text: f.label,
+		onClear: () => clearOneFilter(ctx, f),
+	}));
 
 	if (chips.length === 0) {
 		box.setCssStyles({ display: "none" });
