@@ -12,7 +12,8 @@
  * 只有直链专属的元信息（类型 / 冻结 / 来源地址）用 .pt-beta-* 类。
  */
 
-import { setIcon, Menu } from "obsidian";
+import { Notice, setIcon, Menu } from "obsidian";
+import { captureFocus, restoreFocus } from "@ui/dom/focus-restore";
 import type { ViewContext } from "@ui/view/view-context";
 import type { BetaPluginEntry } from "@app/direct-install";
 
@@ -69,6 +70,8 @@ export function renderBetaList(ctx: ViewContext): void {
 	const el = ctx.betaListEl;
 	if (!el) return;
 	const t = ctx.t;
+	// 整层重建会销毁当前焦点元素 → 键盘用户每次操作后都要重新 Tab 一遍工具栏
+	const focusToken = captureFocus(el);
 	el.empty();
 
 	const entries = (ctx.betaPlugins ?? []).slice().sort(compareEntry);
@@ -101,11 +104,22 @@ export function renderBetaList(ctx: ViewContext): void {
 	// ── 说明（这个列表是什么、能干什么）──
 	el.createDiv({ cls: "pt-beta-hint", text: t("betaList.hint") });
 
+	// ── 空态：从未直链安装过时，功能说明之后必须明确告知「这里是空的」+ 下一步该点哪。
+	// 此前只有说明文字 + 一片空白，新用户无法区分「还没装」与「加载失败」。──
+	if (entries.length === 0) {
+		const empty = el.createDiv({ cls: "pt-empty" });
+		empty.createDiv({ cls: "pt-empty-title", text: t("betaList.empty") });
+		empty.createDiv({ cls: "pt-empty-hint", text: t("betaList.empty.hint") });
+		restoreFocus(el, focusToken);
+		return;
+	}
+
 	// ── 卡片网格（视觉级复用浏览页 .pt-card 资产；操作整体替换为直链语义）──
 	const cards = el.createDiv({ cls: "pt-beta-cards" });
 	for (const e of entries) {
 		cards.appendChild(createBetaCard(ctx, e));
 	}
+	restoreFocus(el, focusToken);
 }
 
 /**
@@ -157,7 +171,19 @@ function createBetaCard(ctx: ViewContext, e: BetaPluginEntry): HTMLElement {
 		ev.stopPropagation();
 		if (updBtn.hasClass("pt-spin")) return;
 		updBtn.addClass("pt-spin");
-		void ctx.updateBetaPluginById(e.id).catch(() => undefined).finally(() => ctx.renderBetaList());
+		// 原本是 .catch(() => undefined)：失败被完全吞掉。用户视角是「转了一下、什么都没发生」，
+		// 既不知道失败也不知道成功（finally 里 renderBetaList 重建整页会连 pt-spin 一起清掉）。
+		void ctx
+			.updateBetaPluginById(e.id)
+			.catch((err: unknown) => {
+				const msg = err instanceof Error ? err.message : String(err);
+				new Notice(t("action.update.failed", { msg }));
+			})
+			.finally(() => {
+				// 主动摘掉旋转态，不依赖「DOM 被 renderBetaList 销毁」来清状态
+				updBtn.removeClass("pt-spin");
+				ctx.renderBetaList();
+			});
 	});
 
 	const freezeBtn = actionsRow.createEl("button", {

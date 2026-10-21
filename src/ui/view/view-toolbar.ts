@@ -1073,8 +1073,9 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 	// 「上线」过滤：无 "全部" 选项，默认不过滤；点窗口胶囊激活，再点同一胶囊取消
 	const NEW_WINDOWS = [1, 3, 7, 30, 90, 365];
 	const NEW_LABELS = ["24h", "3天", "7天", "30天", "90天", "1年"];
+	// pt-toggle-new：供顶部「筛选中」chips 的 ✕ 清除时精确定位并复位胶囊态
 	const newToggles = NEW_WINDOWS.map((_, i) =>
-		newChip.createEl("button", { cls: "pt-filter", text: NEW_LABELS[i] })
+		newChip.createEl("button", { cls: "pt-filter pt-toggle-new", text: NEW_LABELS[i] })
 	);
 	const updateNewToggle = () => {
 		newToggles.forEach((el, i) => {
@@ -1115,7 +1116,8 @@ export function buildToolbar(ctx: ViewContext, state: ToolbarState): { searchInp
 	};
 	UPD_OPTIONS.forEach((o, i) => {
 		if (i === POSITIVE_COUNT) updChip.createSpan({ cls: "pt-facet-sep", text: "·" });
-		const btn = updChip.createEl("button", { cls: "pt-filter", text: o.label });
+		// pt-toggle-upd：同上，供 chips 清除时复位胶囊态
+		const btn = updChip.createEl("button", { cls: "pt-filter pt-toggle-upd", text: o.label });
 		updToggles.push(btn);
 		btn.addEventListener("click", () => {
 			const val = updValue(o);

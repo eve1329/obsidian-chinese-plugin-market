@@ -48,13 +48,25 @@ export function renderPluginList(ctx: ViewContext, preserveScroll = false) {
 		// 轻量签名（长度 + 首尾 id）替代原先 filtered.map(id).join(",") 的 O(n) 长字符串分配，
 		// 每帧渲染省一次 5617 个 id 的拼接；排序键显式纳入 filterState，保证排序变化仍被捕捉
 		// （同一筛选 + 同一排序键下结果为确定性序列，首尾 id + 长度即可唯一标识）。
+		// 签名必须覆盖【所有】参与过滤的维度。早前只编码了 5 个，而 runFilterPipeline
+		// 实际传了 15+ 个参数 —— 漏维时这些筛选改变后签名不变、守卫命中直接 return，
+		// 表现为「点了筛选但列表一张卡都没换」（概率性触发，最难复现也最难自查）。
 		const filterState =
 			ctx.sourceFilter + "\u0000" + ctx.installFilter + "\u0000" +
 			(ctx.sortFavoritesFirst ? "1" : "0") + "\u0000" +
 			(ctx.recommendedOnly ? "1" : "0") + "\u0000" +
 			(ctx.authorFilter ?? "") + "\u0000" +
 			ctx.selectedCategories.join(",") + "\u0000" +
-			ctx.sortBy;
+			ctx.sortBy + "\u0000" +
+			// ↓ 此前遗漏的维度（与 runFilterPipeline 入参对齐）
+			ctx.favoriteFilter + "\u0000" +
+			ctx.chineseEcoFilter + "\u0000" +
+			ctx.seriesFilter + "\u0000" +
+			ctx.triedFilter + "\u0000" +
+			ctx.abandonedFilter + "\u0000" +
+			ctx.verdictFilter + "\u0000" +
+			String(ctx.newWithinDays ?? "") + "\u0000" +
+			String(ctx.updatedWithinDays ?? "");
 		const listSig =
 			filtered.length + ":" +
 			(filtered[0]?.id ?? "") + ":" +
@@ -594,6 +606,11 @@ function updateWindowImpl(ctx: ViewContext, renderCtx: CardRenderContext): void 
 			ctx.pendingCards.add(card);
 		}
 		card.setAttribute("data-idx", String(i));
+		// role=list/listitem 已在注释里承诺「用 posinset/setsize 告知读屏器这是长列表的第 x/n 项」，
+		// 但这两个属性此前从未被写入：虚拟滚动下 DOM 里只有窗口内的卡片，读屏器会把列表
+		// 报成「共 ~窗口大小 项」，与真实总数相差两个数量级，比不声明 role=list 更误导。
+		card.setAttribute("aria-posinset", String(i + 1));
+		card.setAttribute("aria-setsize", String(ctx.visibleList.length));
 	}
 
 	// ── 3. 计算 spacer 高度（撑出总高，使窗口卡落在正确滚动位置）──

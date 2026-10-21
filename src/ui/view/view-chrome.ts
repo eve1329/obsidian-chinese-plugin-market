@@ -235,7 +235,17 @@ export function updateFacetVisibility(ctx: ViewContext) {
 				ctx.selectedCategories.length > 0 ||
 				ctx.authorFilter !== null ||
 				ctx.installFilter !== "all" ||
-				ctx.favoriteFilter !== "all";
+				ctx.favoriteFilter !== "all" ||
+				// 补齐此前遗漏的 7 个维度。漏判的后果：这些筛选生效时「重置筛选」不高亮、
+				// 活跃 chips 区空白，用户无从察觉列表为何变少；而 newWithinDays /
+				// updatedWithinDays / sourceFilter 是持久化的，重启后列表凭空变少更无从查证。
+				ctx.chineseEcoFilter !== "all" ||
+				ctx.seriesFilter !== "all" ||
+				ctx.triedFilter !== "all" ||
+				ctx.abandonedFilter !== "all" ||
+				ctx.verdictFilter !== "all" ||
+				ctx.newWithinDays !== null ||
+				ctx.updatedWithinDays !== null;
 			resetBtn.classList.toggle("is-active", hasActive);
 		}
 
@@ -351,6 +361,86 @@ export function renderActiveFilters(ctx: ViewContext) {
 				if (chip) chip.setAttribute("aria-pressed", "false");
 				ctx.updateFacetVisibility();
 				ctx.scheduleRender();
+			},
+		});
+	}
+
+	// ── 中文生态 ──
+	// 以下四类此前完全缺席：收起筛选面板后列表凭空变少却无任何常驻提示，
+	// 且 newWithinDays / updatedWithinDays 是持久化的，重启后更无从查证。
+	if (ctx.chineseEcoFilter !== "all") {
+		chips.push({
+			text: ctx.t("filter.active.eco"),
+			onClear: () => {
+				ctx.chineseEcoFilter = "all";
+				const t = q(ctx.contentEl, ".pt-toggle-eco");
+				if (t) t.setAttribute("aria-pressed", "false");
+				ctx.updateFacetVisibility();
+				ctx.scheduleRender(true);
+			},
+		});
+	}
+
+	// ── 系列（竹林中国 / 羽鳞精选）──
+	if (ctx.seriesFilter !== "all") {
+		const isBamboo = ctx.seriesFilter === "bamboo";
+		chips.push({
+			text: ctx.t(isBamboo ? "filter.active.series.bamboo" : "filter.active.series.yulin"),
+			onClear: () => {
+				ctx.seriesFilter = "all";
+				ctx.contentEl.querySelectorAll(".pt-toggle-series").forEach((el) => {
+					el.setAttribute("aria-pressed", "false");
+				});
+				ctx.updateFacetVisibility();
+				ctx.scheduleRender(true);
+			},
+		});
+	}
+
+	// ── 新上线窗口 ──
+	if (ctx.newWithinDays !== null) {
+		const NEW_WINDOWS = [1, 3, 7, 30, 90, 365];
+		const NEW_LABELS = ["24h", "3天", "7天", "30天", "90天", "1年"];
+		const idx = NEW_WINDOWS.indexOf(ctx.newWithinDays);
+		const label = idx >= 0 ? NEW_LABELS[idx] : String(ctx.newWithinDays);
+		chips.push({
+			text: ctx.t("filter.active.new", { value: label }),
+			onClear: () => {
+				ctx.newWithinDays = null;
+				ctx.settings.newWithinDays = null;
+				void ctx.saveSettings();
+				ctx.contentEl.querySelectorAll(".pt-toggle-new").forEach((el) => {
+					el.setAttribute("aria-pressed", "false");
+				});
+				ctx.updateFacetVisibility();
+				ctx.scheduleRender(true);
+			},
+		});
+	}
+
+	// ── 更新时间窗口 ──
+	if (ctx.updatedWithinDays !== null) {
+		const v = ctx.updatedWithinDays;
+		const UPD_LABEL: Record<number, string> = {
+			30: "30天内有更新",
+			90: "90天内有更新",
+			365: "1年内有更新",
+			[-365]: "超1年未更新",
+			[-730]: "超2年未更新",
+		};
+		const label =
+			UPD_LABEL[v] ?? (v > 0 ? `近 ${v} 天内有更新` : `超 ${Math.abs(v)} 天未更新`);
+		chips.push({
+			text: ctx.t("filter.active.updated", { value: label }),
+			onClear: () => {
+				ctx.updatedWithinDays = null;
+				ctx.settings.updatedWithinDays = null;
+				void ctx.saveSettings();
+				ctx.contentEl.querySelectorAll(".pt-toggle-upd").forEach((el) => {
+					el.setAttribute("aria-pressed", "false");
+				});
+				ctx.updateFacetVisibility();
+				ctx.scheduleRender(true);
 			},
 		});
 	}

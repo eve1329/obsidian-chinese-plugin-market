@@ -490,6 +490,11 @@ export class Translator {
 		this.cache = {};
 	}
 
+	/** 当前 volatile 缓存条数（设置页「清除缓存」需展示真实数量，避免用户对着残缺文案盲点） */
+	getCacheSize(): number {
+		return Object.keys(this.cache).length;
+	}
+
 	/** 清除个人 AI 固化资产（不影响 cache） */
 	clearAIDict() {
 		this.aiAssetStore.clear();

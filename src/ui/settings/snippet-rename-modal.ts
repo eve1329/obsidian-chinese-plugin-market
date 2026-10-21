@@ -35,7 +35,11 @@ export class SnippetRenameModal extends Modal {
 					this.value = v;
 				});
 				text.inputEl.addEventListener("keydown", (event: KeyboardEvent) => {
-					if (event.key === "Enter") this.commit();
+					// 同 PromptModal：中文输入法候选词上屏的 Enter 不得触发提交
+					if (event.key === "Enter" && !event.isComposing) {
+						event.preventDefault();
+						this.commit();
+					}
 				});
 			});
 

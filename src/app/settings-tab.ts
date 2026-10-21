@@ -20,6 +20,7 @@ import { CONTRIBUTORS, contributorGitHubUrl } from "@shared/contributors";
 import { CssSnippetSettingsList } from "@ui/settings/css-snippet-settings-list";
 import { localPhaseMs, PHASE, type SearchTimingSnapshot } from "@domain/search/search-timing";
 import type { SearchMatchDiagnosticsSnapshot } from "@domain/search/query-intent";
+import { ConfirmModal } from "@ui/modals/confirm-modal";
 
 export class TranslatorSettingTab extends PluginSettingTab {
 	private plugin: ChinesePluginMarket;
@@ -644,7 +645,9 @@ export class TranslatorSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: this.t("settings.cache"),
-						desc: this.t("settings.cache.desc"),
+						// 与下方 AI 资产行同款模板：必须显示真实条数，否则用户面对一个红色
+						// 「清除缓存」按钮却完全不知道要清掉多少东西
+						desc: `${this.t("settings.cache.desc")} ${this.plugin.translator.getCacheSize()} 条）`,
 						render: (setting) => {
 							setting.addButton((btn) =>
 								btn
@@ -681,7 +684,14 @@ export class TranslatorSettingTab extends PluginSettingTab {
 								btn
 									.setButtonText(this.t("settings.tm.clearApproved"))
 									.setDestructive()
-									.onClick(() => void this.plugin.clearApprovedTM())
+									.onClick(() =>
+										this.confirmDanger({
+											title: this.t("confirm.clearApprovedTM.title"),
+											message: this.t("confirm.clearApprovedTM.message"),
+											// 该操作会批量删除 vault 内的记忆笔记文件，破坏面最大
+											onConfirm: () => void this.plugin.clearApprovedTM(),
+										}),
+									)
 							);
 						},
 					},
@@ -997,11 +1007,17 @@ export class TranslatorSettingTab extends PluginSettingTab {
 				.setButtonText(this.t("settings.translateSettings.clearCache.btn"))
 				.setTooltip(this.t("settings.translateSettings.clearCache.tip"))
 				.setDestructive()
-				.onClick(() => {
-					this.plugin.settingsTranslator?.clearCache();
-					this.plugin.settings.settingsTranslateCache = {};
-					new Notice(this.t("settings.translateSettings.cleared"));
-				})
+				.onClick(() =>
+					this.confirmDanger({
+						title: this.t("confirm.clearSettingsTranslate.title"),
+						message: this.t("confirm.clearSettingsTranslate.message"),
+						onConfirm: () => {
+							this.plugin.settingsTranslator?.clearCache();
+							this.plugin.settings.settingsTranslateCache = {};
+							new Notice(this.t("settings.translateSettings.cleared"));
+						},
+					}),
+				)
 		);
 	}
 
@@ -1205,16 +1221,59 @@ export class TranslatorSettingTab extends PluginSettingTab {
 		);
 	}
 
+	/**
+	 * 破坏性操作统一入口：先二次确认，确认后执行并重绘设置面板。
+	 *
+	 * 原先这四个「清除」入口都只有一个 `.setDestructive()` 的红色按钮 —— 那只是着色，
+	 * 不构成交互确认，误点一下即永久丢失数据且无撤销通道。
+	 * 重绘（update）也是必需的：desc 里的条数在声明期求值一次，不重绘会出现
+	 * 「提示已清除、屏幕上仍写着共 137 条」的矛盾。
+	 */
+	private confirmDanger(opts: { title: string; message: string; onConfirm: () => void }): void {
+		new ConfirmModal({
+			app: this.plugin.app,
+			title: opts.title,
+			message: opts.message,
+			danger: true,
+			onConfirm: () => {
+				opts.onConfirm();
+				this.update();
+			},
+		}).open();
+	}
+
 	private async clearCache(): Promise<void> {
-		this.plugin.translator.clearCache();
-		this.plugin.saveTranslatorData();
-		new Notice(this.t("notice.cacheCleared"));
+		const n = this.plugin.translator.getCacheSize();
+		if (n === 0) {
+			new Notice(this.t("notice.cacheCleared"));
+			return;
+		}
+		this.confirmDanger({
+			title: this.t("confirm.clearCache.title"),
+			message: this.t("confirm.clearCache.message", { n: String(n) }),
+			onConfirm: () => {
+				this.plugin.translator.clearCache();
+				this.plugin.saveTranslatorData();
+				new Notice(this.t("notice.cacheCleared"));
+			},
+		});
 	}
 
 	private async clearAIDict(): Promise<void> {
-		this.plugin.translator.clearAIDict();
-		this.plugin.saveTranslatorData();
-		new Notice(this.t("notice.aiDictCleared"));
+		const n = this.plugin.translator.getAIDictSize();
+		if (n === 0) {
+			new Notice(this.t("notice.aiDictCleared"));
+			return;
+		}
+		this.confirmDanger({
+			title: this.t("confirm.clearAIDict.title"),
+			message: this.t("confirm.clearAIDict.message", { n: String(n) }),
+			onConfirm: () => {
+				this.plugin.translator.clearAIDict();
+				this.plugin.saveTranslatorData();
+				new Notice(this.t("notice.aiDictCleared"));
+			},
+		});
 	}
 
 	/** 渲染本地向量索引构建行：按钮 + 实时状态（building→done/error/idle）+ 进度条 + Notice 提示 */

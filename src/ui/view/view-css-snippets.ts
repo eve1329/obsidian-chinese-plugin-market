@@ -21,6 +21,7 @@ import { Modal, Notice } from "obsidian";
 import { PromptModal } from "@ui/modals/prompt-modal";
 import { createMenuSelect } from "@ui/components/menu-select";
 import { SnippetRenameModal } from "@ui/settings/snippet-rename-modal";
+import { captureFocus, restoreFocus } from "@ui/dom/focus-restore";
 import type { ViewContext } from "@ui/view/view-context";
 import type { CssStorePort } from "@ui/settings/snippet-manage-store";
 import type { SnippetInfo } from "@data/platform/snippet";
@@ -163,6 +164,8 @@ function rerenderList(
 	state: ManageFilterState,
 	rerender: () => void,
 ): void {
+	// 整表重建会销毁当前焦点（勾选框 / 搜索框）→ 键盘用户每次操作都被踢回 body
+	const focusToken = captureFocus(listEl);
 	listEl.innerHTML = "";
 	const snippets = store.listSnippets();
 	let shown = 0;
@@ -202,8 +205,16 @@ function rerenderList(
 			requestDelete(ctx, store, snippet);
 		});
 	}
+	// 空态必须区分「真的没有片段」与「搜索/筛选无果」：对后者说「暂无 CSS 片段」既不属实，
+	// 还会误导用户去新建片段，而正确动作是清除搜索条件。与收藏页 fav.empty / fav.empty.filtered
+	// 的双分支口径一致。
 	if (shown === 0) {
-		listEl.appendChild(createDiv({ cls: "pt-css-empty", text: ctx.t("css.empty") }));
+		listEl.appendChild(
+			createDiv({
+				cls: "pt-css-empty",
+				text: snippets.length === 0 ? ctx.t("css.empty") : ctx.t("css.empty.filtered"),
+			}),
+		);
 	}
 	countEl.textContent = ctx.t("css.count", {
 		shown: String(shown),
@@ -214,6 +225,7 @@ function rerenderList(
 		const s = snippets.find((x) => x.baseName === b);
 		if (!s || !matchesFilter(toRow(s, store), state)) selected.delete(b);
 	}
+	restoreFocus(listEl, focusToken);
 }
 
 /** 顶部「新建片段」：PromptModal 输入基名，校验后写空 .css */
@@ -273,6 +285,8 @@ async function bulkApply(
 			fail++;
 		}
 	}
-	if (fail > 0) new Notice(ctx.t("css.bulk.summary", { ok: String(ok), fail: String(fail) }));
+	// 无论成败都给汇总：此前只有 fail>0 才提示，用户点「批量启用 8 个」后毫无反馈，
+	// 无法确认是否生效；与更新页批量操作的反馈标准对齐。
+	new Notice(ctx.t("css.bulk.summary", { ok: String(ok), fail: String(fail) }));
 	renderCssSnippetsList(ctx);
 }

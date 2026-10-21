@@ -51,11 +51,28 @@ export class JournalView extends ItemView {
 		root.createDiv({ cls: "pt-journal-view-title", text: this.host.t("journal.footprint") });
 		const body = root.createDiv({ cls: "pt-journal-view-body" });
 
-		const [history, entries, official] = await Promise.all([
+		// 三个并发 IO 完成前正文区完全空白（评测笔记多 / vault 大时是明显白屏期），
+		// 用户会以为视图坏了。先给加载指示，复用主列表的 .pt-empty / .pt-loading 样式。
+		const loading = body.createDiv({ cls: "pt-empty pt-loading" });
+		loading.createDiv({ cls: "pt-loading-spinner" });
+		loading.createDiv({ cls: "pt-empty-title", text: this.host.t("app.loading") });
+
+		// onOpen 此前无任何错误处理：任一 IO reject 会让页面永远停在「只有标题」，
+		// 既不告知原因也不给重试入口，只能关掉重开。
+		const result = await Promise.all([
 			this.host.loadHistory(),
 			this.host.listEntries(),
 			this.host.officialNames(),
-		]);
+		]).catch((e: unknown) => {
+			loading.remove();
+			const err = body.createDiv({ cls: "pt-error" });
+			err.createDiv({ cls: "pt-empty-title", text: this.host.t("error.title") });
+			err.createDiv({ cls: "pt-empty-hint", text: e instanceof Error ? e.message : String(e) });
+			return null;
+		});
+		if (!result) return;
+		const [history, entries, official] = result;
+		loading.remove();
 
 		// 还没写过任何评测：展示引导（B），并附「装过」记录数供参考
 		if (entries.length === 0) {

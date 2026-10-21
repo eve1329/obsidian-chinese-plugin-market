@@ -26,6 +26,7 @@ import { PromptModal } from "@ui/modals/prompt-modal";
 import { createPluginCard } from "@ui/components/card-render";
 import { createMenuSelect } from "@ui/components/menu-select";
 import { handleToggleEnabled } from "@ui/view/view-cards";
+import { captureFocus, restoreFocus } from "@ui/dom/focus-restore";
 
 /** 分组筛选哨兵值：全部 */
 export const FAV_GROUP_ALL = "__all__";
@@ -36,6 +37,9 @@ export const FAV_GROUP_NONE = "__none__";
 export function renderFavoritesList(ctx: ViewContext): void {
 	const el = ctx.favoritesListEl;
 	if (!el || ctx.viewTab !== "favorites") return;
+	// 整层重建会销毁当前焦点元素（最典型是搜索框）→ 键盘用户每次操作都被踢回 body，
+	// 继续打字会被宿主当作全局快捷键处理。重建后按标识恢复。
+	const focusToken = captureFocus(el);
 	el.innerHTML = "";
 
 	// 卡片交互走与浏览页同一套事件委托（ctx.onCardClick：安装/收藏/对比/详情…）。
@@ -116,6 +120,9 @@ export function renderFavoritesList(ctx: ViewContext): void {
 	});
 
 	rerender();
+	// el.innerHTML 会销毁搜索框：焦点原本在其中时重建后必须恢复，
+	// 否则键盘用户继续打字会被宿主当作全局快捷键处理
+	restoreFocus(el, focusToken);
 }
 
 /** 组名列表：显式清单 favoriteGroupNames 优先，兜底合并映射值派生（兼容升级前旧数据） */

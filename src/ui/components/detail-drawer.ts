@@ -27,6 +27,7 @@ import type { ChinesePluginMarketSettings } from "@ui/view/translator-view";
 import { makeT, type TFunc, type I18nKey } from "@shared/i18n";
 import { cleanChineseSpaces, stripReviewNotice } from "@shared/utils";
 import { ICON_DOWNLOAD } from "@ui/components/card-render";
+import { ConfirmModal } from "@ui/modals/confirm-modal";
 import type { JournalEntry } from "@domain/journal/journal-entry";
 import { renderJournalEditor } from "@ui/components/journal-editor";
 import { formatDownloads, formatUpdated } from "@domain/catalog/stats";
@@ -402,20 +403,48 @@ export class PluginDetailDrawer {
 		tryFocus();
 	}
 
-	/** 重建详情内容并保留滚动位置（安装/启用状态变化后刷新 UI） */
-	refreshContent() {
-		const scrollEl = this.drawerEl?.querySelector(".pt-detail-page-scroll") as HTMLElement | null;
-		const scrollTop = scrollEl?.scrollTop ?? 0;
-
-		// 清理旧内容注册的监听器/定时器，避免泄漏
+	/**
+	 * 释放当前内容区注册的监听器 / 定时器 / 子组件。
+	 *
+	 * back / navigate / refreshContent 三条重建路径必须共用同一份清理逻辑：
+	 * buildContent() 每次都会往 _cleanupFns 追加新项（最典型是头部高度的
+	 * ResizeObserver），任一路径漏掉都会让它们继续 observe 已脱离文档的旧节点，
+	 * 每重建一次泄漏一个观察者 + 一整棵 detached DOM 子树。
+	 */
+	private teardownContent(): void {
 		this._cleanupFns.forEach((fn) => fn());
 		this._cleanupFns = [];
 		this._journalDispose?.();
 		this._journalDispose = undefined;
 		this.renderComp?.unload();
 		this.renderComp = null;
+	}
+
+	/**
+	 * 重建后把焦点落回抽屉内（关闭按钮）。
+	 *
+	 * buildContent() 会 empty() 整个抽屉，被聚焦的按钮随之被移除，
+	 * document.activeElement 回落 body；此后按 Tab 既不命中焦点陷阱的 first 也不命中
+	 * last，陷阱整体失效，焦点直接跳出 aria-modal 声明的对话框 —— 而屏幕阅读器仍
+	 * 认为在对话框内，键盘与读屏用户同时迷失。
+	 */
+	private focusAfterRebuild(): void {
+		window.requestAnimationFrame(() => {
+			const closeBtn = this.drawerEl?.querySelector(".pt-drawer-close");
+			if (closeBtn) (closeBtn as HTMLElement).focus();
+		});
+	}
+
+	/** 重建详情内容并保留滚动位置（安装/启用状态变化后刷新 UI） */
+	refreshContent() {
+		const scrollEl = this.drawerEl?.querySelector(".pt-detail-page-scroll") as HTMLElement | null;
+		const scrollTop = scrollEl?.scrollTop ?? 0;
+
+		this.teardownContent();
 
 		this.buildContent();
+		// 重建后焦点必须显式落回抽屉内，否则掉到 body 会让焦点陷阱失效
+		this.focusAfterRebuild();
 
 		// 恢复滚动位置
 		if (scrollTop > 0) {
@@ -522,17 +551,8 @@ export class PluginDetailDrawer {
 	navigate(_pluginId: string, newInfo: PluginInfo, newResult: TranslateResult | undefined, newSimilar: SimilarCandidate[]) {
 		// 保存当前到历史栈
 		this._history.push({ info: this.info, result: this.result, similar: this.similar });
-		// 清理旧内容注册的监听器/定时器（与 refreshContent 一致）。
-		// 早前这里只 unload 了 renderComp：buildContent() 每次都会新增清理项（最典型是
-		// 头部高度的 ResizeObserver），不执行 _cleanupFns 会让它们继续 observe 已脱离
-		// 文档的 headBlock，每跳一次泄漏一个观察者 + 一整棵 detached DOM 子树。
-		this._cleanupFns.forEach((fn) => fn());
-		this._cleanupFns = [];
-		this._journalDispose?.();
-		this._journalDispose = undefined;
-		// 释放旧 README
-		this.renderComp?.unload();
-		this.renderComp = null;
+		// 与 refreshContent / 返回 共用同一份清理（含 _cleanupFns 与 README 组件）
+		this.teardownContent();
 		// 更新数据
 		this.info = newInfo;
 		this.result = newResult;
@@ -541,6 +561,7 @@ export class PluginDetailDrawer {
 		this._similarPending = true;
 		// 重建内容区
 		this.buildContent();
+		this.focusAfterRebuild();
 	}
 
 	/**
@@ -830,14 +851,16 @@ export class PluginDetailDrawer {
 			backBtn.addEventListener("click", () => {
 				const prev = this._history.pop();
 				if (!prev) return;
-				this.renderComp?.unload();
-				this.renderComp = null;
+				// 与 navigate / refreshContent 共用清理：早前这里只 unload 了 renderComp，
+				// 漏掉 _cleanupFns —— 每按一次返回就泄漏一个头部 ResizeObserver
+				this.teardownContent();
 				this.info = prev.info;
 				this.result = prev.result;
 				this.similar = prev.similar;
 				// 历史栈里的 similar 是已算好的快照，直接渲染无需骨架
 				this._similarPending = false;
 				this.buildContent();
+				this.focusAfterRebuild();
 			});
 		}
 
@@ -1110,11 +1133,22 @@ export class PluginDetailDrawer {
 			});
 			appendIconText(uninstallBtn, `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`, this.t("card.uninstall"));
 			uninstallBtn.addEventListener("click", () => {
-				uninstallBtn.disabled = true;
-				uninstallBtn.addClass("pt-detail-btn--loading");
-				void Promise.resolve(this.uninstallPlugin(this.info)).finally(() => {
-					this.refreshContent();
-				});
+				// 卸载不可逆（递归删除插件目录）。抽屉里该按钮与「复制 ID」「收藏」
+				// 同排、同尺寸、同为 icon+文字，唯一区别是配色 —— 误触代价极高，必须确认。
+				new ConfirmModal({
+					app: this.app,
+					title: this.t("confirm.uninstall.title", { name: this.info.name }),
+					message: this.t("confirm.uninstall.message", { name: this.info.name }),
+					confirmText: this.t("card.uninstall"),
+					danger: true,
+					onConfirm: () => {
+						uninstallBtn.disabled = true;
+						uninstallBtn.addClass("pt-detail-btn--loading");
+						void Promise.resolve(this.uninstallPlugin(this.info)).finally(() => {
+							this.refreshContent();
+						});
+					},
+				}).open();
 			});
 		}
 
@@ -1551,7 +1585,13 @@ export class PluginDetailDrawer {
 
 	/** 切换回原文 / 翻译 */
 	private onKeydown(e: KeyboardEvent) {
+		// 已被内层处理过的事件不再插手，避免与嵌套组件 / 宿主快捷键互相打断
+		if (e.defaultPrevented) return;
 		if (e.key === "Escape") {
+			// 嵌套 Modal（选版本 / 洞察 / 评测等）打开时，Esc 应只关最内层。
+			// 抽屉的 keydown 挂在 document 上，若不守卫，在子弹窗里按 Esc 会连带关掉
+			// 整个抽屉，用户刚浏览的 README / 依赖 / 相似推荐上下文全部丢失。
+			if (this.hasOpenNestedModal()) return;
 			this.close();
 			return;
 		}
@@ -1563,6 +1603,15 @@ export class PluginDetailDrawer {
 			if (focusable.length === 0) return;
 			const first = focusable[0];
 			const last = focusable[focusable.length - 1];
+			// 兜底：焦点已跑到抽屉外（重渲染移除原焦点元素后 activeElement 会回落 body），
+			// 此时 first/last 的边界判定永不成立、陷阱形同虚设 —— 直接拉回抽屉内首个元素。
+			const active = document.activeElement;
+			const activeInDrawer = active instanceof Node && this.drawerEl.contains(active);
+			if (!activeInDrawer) {
+				e.preventDefault();
+				first.focus();
+				return;
+			}
 			if (e.shiftKey) {
 				if (document.activeElement === first) {
 					e.preventDefault();
@@ -1575,6 +1624,20 @@ export class PluginDetailDrawer {
 				}
 			}
 		}
+	}
+
+	/**
+	 * 是否存在已打开的嵌套 Modal。
+	 * Obsidian 的 Modal 会挂到 `.modal-container` 下；这里额外校验可见性，
+	 * 避免宿主保留的空容器把抽屉的 Esc 永久吞掉（那样 Esc 就彻底失效了）。
+	 * 注：Obsidian 内部类名若有变化，本守卫退化为不拦截 —— 不引入错误，只是问题仍在。
+	 */
+	private hasOpenNestedModal(): boolean {
+		const containers = document.querySelectorAll<HTMLElement>(".modal-container");
+		for (const c of Array.from(containers)) {
+			if (c.offsetParent !== null || c.getClientRects().length > 0) return true;
+		}
+		return false;
 	}
 
 	private onBackdropClick(e: MouseEvent) {

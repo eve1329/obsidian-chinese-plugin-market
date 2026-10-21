@@ -16,6 +16,7 @@ import { LAYOUT } from "@shared/constants";
 import { logger } from "@shared/logger";
 import type { MirrorConfig } from "@domain/catalog/mirror";
 import { installCommunityPlugin, togglePluginEnabled, uninstallCommunityPlugin } from "@data/platform/plugin-installer";
+import { ConfirmModal } from "@ui/modals/confirm-modal";
 
 /**
  * 装配详情抽屉的「依赖」端口。
@@ -211,10 +212,26 @@ export async function handleToggleEnabled(ctx: ViewContext, plugin: PluginInfo):
 
 /**
  * 卸载已安装插件（供事件委托与卡片直接回调共用）。
- * 点击卸载图标即直接卸载；卸载中加锁防重复点击。
+ *
+ * 卸载会递归删除插件目录（含该插件自身配置数据），不可逆且无回收站；而卡片上
+ * 垃圾桶图标与收藏/评测紧邻（gap 2px、26×26 热区），误触代价极高 —— 必须先二次确认。
+ * （此处原有注释写着「含二次确认」，但实现里并没有，本次补齐。）
+ * 确认后卸载中加锁防重复点击。
  */
 export async function handleUninstall(ctx: ViewContext, plugin: PluginInfo): Promise<void> {
 	if (ctx.installingIds.has(plugin.id)) return;
+	const confirmed = await new Promise<boolean>((resolve) => {
+		new ConfirmModal({
+			app: ctx.app,
+			title: ctx.t("confirm.uninstall.title", { name: plugin.name }),
+			message: ctx.t("confirm.uninstall.message", { name: plugin.name }),
+			confirmText: ctx.t("card.uninstall"),
+			danger: true,
+			onConfirm: () => resolve(true),
+			onCancel: () => resolve(false),
+		}).open();
+	});
+	if (!confirmed) return;
 	ctx.installingIds.add(plugin.id);
 	ctx.refreshCardState(plugin.id);
 	ctx.scheduleRender(true);

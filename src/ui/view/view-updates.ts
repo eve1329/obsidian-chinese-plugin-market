@@ -18,6 +18,7 @@ import type { ViewContext, UpdatesViewMode } from "@ui/view/view-context";
 import { refreshOutdated } from "@ui/view/view-data";
 import { openVersionPicker } from "@ui/components/version-picker-modal";
 import { createUpdateProgressLayer } from "@ui/components/update-progress";
+import { captureFocus, restoreFocus } from "@ui/dom/focus-restore";
 import { createMenuSelect } from "@ui/components/menu-select";
 import type { PluginInfo } from "@domain/catalog/translator";
 import type { I18nKey } from "@shared/i18n";
@@ -64,6 +65,11 @@ function addUpdateButton(ctx: ViewContext, row: HTMLElement, p: PluginInfo): voi
 			// 锁死、再也无法点击（只能切走页签重渲）。
 			try {
 				await ctx.updatePlugin(p.id);
+			} catch (err: unknown) {
+				// try/finally 只保证旋转态复位，异常本身仍会逃成 unhandled rejection：
+				// 用户看不到任何提示，而随后的 renderUpdatesList 让列表「刷一下」，反而更像成功了。
+				const msg = err instanceof Error ? err.message : String(err);
+				new Notice(ctx.t("action.update.failed", { msg }));
 			} finally {
 				updBtn.removeClass("pt-spin");
 			}
@@ -123,6 +129,9 @@ function renderPinnedRow(ctx: ViewContext, row: HTMLElement, p: PluginInfo): voi
 			// 同上：异常时必须撤掉旋转态，否则按钮被防重入守卫永久锁死
 			try {
 				await ctx.pinPluginVersion(p.id, null);
+			} catch (err: unknown) {
+				const msg = err instanceof Error ? err.message : String(err);
+				new Notice(ctx.t("version.unpin.failed", { msg }));
 			} finally {
 				unpinBtn.removeClass("pt-spin");
 			}
@@ -158,6 +167,8 @@ function renderGroup(
 export function renderUpdatesList(ctx: ViewContext): void {
 	const el = ctx.updatesListEl;
 	if (!el) return;
+	// 整层重建会销毁当前焦点元素 → 键盘用户每次操作后都要重新 Tab 一遍工具栏
+	const focusToken = captureFocus(el);
 	const t = ctx.t;
 	el.empty();
 
@@ -255,6 +266,7 @@ export function renderUpdatesList(ctx: ViewContext): void {
 		empty.createDiv({ cls: "pt-updates-empty-title", text: t("updates.empty") });
 		empty.createDiv({ cls: "pt-updates-empty-hint", text: t("updates.empty.hint") });
 		renderGroup(el, t("updates.pinned.title"), pinnedPlugins(ctx), (row, p) => renderPinnedRow(ctx, row, p), t("updates.pinned.hint"));
+		restoreFocus(el, focusToken);
 		return;
 	}
 
@@ -269,6 +281,7 @@ export function renderUpdatesList(ctx: ViewContext): void {
 	}
 
 	renderGroup(el, t("updates.pinned.title"), pinnedPlugins(ctx), (row, p) => renderPinnedRow(ctx, row, p), t("updates.pinned.hint"));
+	restoreFocus(el, focusToken);
 }
 
 /** 已固定版本的已安装插件（按名称排序） */

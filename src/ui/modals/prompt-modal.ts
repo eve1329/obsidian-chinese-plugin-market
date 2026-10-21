@@ -36,7 +36,10 @@ export class PromptModal extends Modal {
 						this.value = v;
 					});
 				text.inputEl.addEventListener("keydown", (event: KeyboardEvent) => {
-					if (event.key === "Enter") {
+					// 中文输入法用 Enter 上屏候选词时同样会派发 keydown（isComposing=true）。
+					// 不判 isComposing 会导致「打完词组按 Enter 选词」被当成提交，弹窗直接关闭、
+					// 用户输入丢失。与 group-management-modal 的既有写法保持一致。
+					if (event.key === "Enter" && !event.isComposing) {
 						event.preventDefault();
 						this.commit();
 					}

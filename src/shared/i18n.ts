@@ -101,6 +101,7 @@ export const STRINGS = {
 	"version.empty.hint": { zh: "该仓库可能没有发布 Release 或 Tag" },
 	"version.fail": { zh: "获取版本列表失败：{msg}" },
 	"version.pinned": { zh: "已固定 v{version}" },
+	"version.unpin.failed": { zh: "取消固定失败：{msg}" },
 	"version.current": { zh: "当前" },
 	"version.pin.done": { zh: "已将 {name} 固定到 v{version}" },
 	"version.unpin.done": { zh: "已将 {name} 改为保持最新" },
@@ -237,6 +238,10 @@ export const STRINGS = {
 	"card.matchSignal.title": { zh: "该结果因「{sig}」命中而被召回" },
 	"card.installed.off": { zh: "已安装" },
 	"card.uninstall": { zh: "卸载插件" },
+	"confirm.uninstall.title": { zh: "卸载「{name}」？" },
+	"confirm.uninstall.message": {
+		zh: "将删除该插件的整个目录（含其自身的配置数据）。此操作不可撤销、无回收站。",
+	},
 	"card.uninstalling": { zh: "卸载中…" },
 	"card.uninstall.confirm": { zh: "确定卸载「{name}」？插件文件将从磁盘删除，此操作不可撤销。" },
 	"card.uninstall.done": { zh: "已卸载 {name}" },
@@ -605,8 +610,24 @@ export const STRINGS = {
 	"settings.cache": { zh: "缓存管理" },
 
 	// 缓存管理子项
-	"settings.cache.desc": { zh: "当前已缓存 " },
+	"settings.cache.desc": { zh: "当前已缓存的译文（共" },
 	"settings.cache.clear": { zh: "清除缓存" },
+	"confirm.clearCache.title": { zh: "清除翻译缓存？" },
+	"confirm.clearCache.message": {
+		zh: "将清除已缓存的 {n} 条译文。清除后下次打开插件市场会重新联网翻译，期间卡片标题显示原文。",
+	},
+	"confirm.clearAIDict.title": { zh: "清除 AI 固化资产？" },
+	"confirm.clearAIDict.message": {
+		zh: "将清除已固化的 {n} 条 AI 译文。这些内容不会重新生成，需要重新消耗 AI 额度翻译。",
+	},
+	"confirm.clearApprovedTM.title": { zh: "清除已采纳的翻译记忆？" },
+	"confirm.clearApprovedTM.message": {
+		zh: "将删除记忆库中全部已采纳的翻译笔记（vault 内文件）。此操作不可撤销，建议先备份。",
+	},
+	"confirm.clearSettingsTranslate.title": { zh: "清空设置页翻译缓存？" },
+	"confirm.clearSettingsTranslate.message": {
+		zh: "将清空设置界面的译文缓存，下次打开设置会重新翻译界面文案。",
+	},
 
 	// 更新管理
 	"settings.updateManage": { zh: "更新管理" },
@@ -759,6 +780,8 @@ export const STRINGS = {
 	"betaList.installPlugin": { zh: "安装插件" },
 	"betaList.installTheme": { zh: "安装主题" },
 	"betaList.count": { zh: "共 {n} 项" },
+	"betaList.empty": { zh: "还没有直链安装的插件" },
+	"betaList.empty.hint": { zh: "通过上方「从直链安装」添加后，这里会列出可更新到来源最新版本、可冻结或取消跟踪的插件" },
 	"betaList.source": { zh: "来源" },
 	"betaList.release": { zh: "Release" },
 	"betaList.untracked": { zh: "已取消跟踪" },
@@ -941,6 +964,11 @@ export const STRINGS = {
 	"filter.active.installed": { zh: "仅已安装" },
 			"filter.active.favorites": { zh: "已收藏" },
 	"filter.active.category": { zh: "分类：{value}" },
+	"filter.active.eco": { zh: "中文生态" },
+	"filter.active.series.bamboo": { zh: "竹林中国系列" },
+	"filter.active.series.yulin": { zh: "羽鳞精选" },
+	"filter.active.new": { zh: "新上线：{value}" },
+	"filter.active.updated": { zh: "更新：{value}" },
 	"filter.active.clear": { zh: "清除该筛选" },
 
 	// 已装插件管理（增强原生「设置 → 社区插件」页）
@@ -1027,6 +1055,7 @@ export const STRINGS = {
 	"css.delete": { zh: "删除片段" },
 	"css.delete.confirm": { zh: "确认删除片段「{name}」？此操作不可撤销，文件将从磁盘移除。" },
 	"css.empty": { zh: "暂无 CSS 片段" },
+	"css.empty.filtered": { zh: "当前搜索或筛选条件下没有匹配的 CSS 片段。" },
 	"css.bulk.selected": { zh: "已选 {n} 项" },
 	"css.bulk.enable": { zh: "批量启用" },
 	"css.bulk.disable": { zh: "批量停用" },

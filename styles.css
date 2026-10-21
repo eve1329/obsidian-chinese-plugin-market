@@ -6786,6 +6786,13 @@ button.pt-card-install-btn--installed {
 	gap: 8px;
 	flex-wrap: wrap;
 }
+/* 隐藏原生搜索框。
+   增强器（plugin-list-enhancer）会往原生 .setting-group-search 上加这个类，
+   避免「原生搜索框 + 本插件筛选栏搜索框」两个输入框并存、且互不联动。
+   此前该类只在 TS 侧声明、CSS 侧从未定义，导致隐藏根本没生效。 */
+.cpm-native-search-hidden {
+	display: none;
+}
 .cpm-filter-keyword {
 	width: 160px;
 }
