@@ -58,7 +58,9 @@ export class ConfirmModal extends Modal {
 			})
 			.addButton((btn) => {
 				btn.setButtonText(this.opts.confirmText ?? t("action.ok"));
-				if (this.opts.danger) btn.setWarning();
+				// setWarning 已废弃：危险操作改用 setDestructive()；确认按钮是本弹窗的主要操作，
+				// 按其语义用 setDestructive().setCta() 表现为「警示色填充主按钮」。
+				if (this.opts.danger) btn.setDestructive().setCta();
 				else btn.setCta();
 				btn.onClick(() => {
 					this.confirmed = true;

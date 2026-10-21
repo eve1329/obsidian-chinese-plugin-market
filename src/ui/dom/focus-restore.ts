@@ -32,7 +32,9 @@ export function captureFocus(container: HTMLElement): FocusToken | null {
 	const idAttr = ID_ATTRS.find((a) => el.hasAttribute(a));
 	return {
 		tag: el.tagName.toLowerCase(),
-		type: el instanceof HTMLInputElement ? el.type : undefined,
+		// 用 Obsidian 的 instanceOf（跨窗口安全，避免 iframe / 不同 realm 下 instanceof 失效）；
+		// 它非 TS 类型守卫，故收窄时显式断言到 HTMLInputElement 再取 type。
+		type: el.instanceOf(HTMLInputElement) ? (el as HTMLInputElement).type : undefined,
 		idAttr,
 		idValue: idAttr ? el.getAttribute(idAttr) ?? undefined : undefined,
 		action: el.getAttribute("data-action") ?? undefined,
