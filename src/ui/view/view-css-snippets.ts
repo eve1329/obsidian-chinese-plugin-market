@@ -277,9 +277,22 @@ async function bulkApply(
 	let fail = 0;
 	for (const b of bases) {
 		try {
-			if (op === "enable") await store.setSnippetEnabled(b, true);
-			else if (op === "disable") await store.setSnippetEnabled(b, false);
-			else await store.deleteSnippet(b);
+			// setSnippetEnabled 的失败以【返回值 false】表达（平台层内部已 catch 并记日志），
+			// 并不抛错。只看 try/catch 会把失败算成成功，导致「批量启用 8 个」在全部失败时
+			// 仍提示「成功 8 / 失败 0」。旧宿主实现返回 void，视为已提交。
+			if (op === "enable") {
+				if ((await store.setSnippetEnabled(b, true)) === false) {
+					fail++;
+					continue;
+				}
+			} else if (op === "disable") {
+				if ((await store.setSnippetEnabled(b, false)) === false) {
+					fail++;
+					continue;
+				}
+			} else {
+				await store.deleteSnippet(b);
+			}
 			ok++;
 		} catch {
 			fail++;

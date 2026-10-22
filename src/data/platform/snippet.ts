@@ -66,11 +66,16 @@ async function readPersistedEnabledSnippets(app: App): Promise<Set<string> | nul
 async function readEnabledSnippets(app: App): Promise<Set<string>> {
 	const cc = asAppInternals(app).customCss;
 	const runtime = copyEnabledSnippets(cc?.enabledSnippets);
-	const persisted = await readPersistedEnabledSnippets(app);
-	if (!runtime) return persisted ?? new Set();
+	// 惰性读取持久化配置：只有「完全没有运行时集合」或「首次读取且运行时为空」才需要。
+	// readEnabledSnippets 会被 waitForSnippetState 的轮询反复调用（单次切换最多十几次），
+	// 每次都读一遍 appearance.json 纯属浪费；语义与无条件读取完全一致。
+	if (!runtime) return (await readPersistedEnabledSnippets(app)) ?? new Set();
 	const firstRead = !enabledStateInitialized.get(app);
 	enabledStateInitialized.set(app, true);
-	if (firstRead && runtime.size === 0 && (persisted?.size ?? 0) > 0) return persisted!;
+	if (firstRead && runtime.size === 0) {
+		const persisted = await readPersistedEnabledSnippets(app);
+		if ((persisted?.size ?? 0) > 0) return persisted!;
+	}
 	return runtime;
 }
 
@@ -190,20 +195,26 @@ export function isSnippetEnabled(app: App, baseName: string): boolean {
  * Obsidian 的 setCssEnabledStatus 会触发异步配置保存 / CSS 重载。等待一次扫描
  * 确认目标值，避免 UI 在旧快照上显示成功；目标文件不存在时立即失败，避免
  * 对明显无效的切换无意义地等待。
+ *
+ * 预算说明：setCssEnabledStatus 之后是一次完整的 loadSnippets（重新解析并应用全部
+ * CSS），片段多 / 机器慢时可达数百毫秒。预算过紧会把「其实已成功但尚未生效」误判成
+ * 失败，从而回滚开关并弹出「切换失败」——比不确认更打扰用户。取 20 × 50ms ≈ 1s
+ * 作为上限，兼顾准确性与可接受的最长等待。
  */
 async function waitForSnippetState(
 	app: App,
 	baseName: string,
 	enabled: boolean,
 ): Promise<boolean> {
-	const attempts = 8;
+	const attempts = 20;
+	const intervalMs = 50;
 	for (let attempt = 0; attempt < attempts; attempt += 1) {
 		const list = await refreshSnippets(app);
 		const target = list.find((snippet) => snippet.baseName === baseName);
 		if (!target) return false;
 		if (target.enabled === enabled) return true;
 		if (attempt < attempts - 1) {
-			await new Promise<void>((resolve) => window.setTimeout(resolve, 25));
+			await new Promise<void>((resolve) => window.setTimeout(resolve, intervalMs));
 		}
 	}
 	return false;
