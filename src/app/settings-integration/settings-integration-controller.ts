@@ -56,6 +56,19 @@ interface PatchedMethod {
 	wrapper: (...args: unknown[]) => unknown;
 }
 
+/**
+ * 带自有 MutationObserver 构造器的 Window。
+ *
+ * `MutationObserver` 是全局 var，只存在于全局作用域、并未声明在 `Window` 接口上，
+ * 因此直接 `view.MutationObserver` 无法通过类型检查。这里声明为【必选】成员：
+ * 既让断言成为真实的类型收窄（不是「多余断言」），也避免为取一个构造器而
+ * 使用 `globalThis`（本仓库 eslint 规则禁止）。
+ * 设置独立窗口必须用该窗口自己的构造器，不能借用主窗口的。
+ */
+interface WindowWithObserver extends Window {
+	MutationObserver: typeof MutationObserver;
+}
+
 export interface SettingsIntegrationHost {
 	/** 打开本插件设置面板（兼容旧式落点） */
 	openPluginSettings: () => void;
@@ -232,9 +245,9 @@ export class SettingsIntegrationController {
 		const container = setting.tabContentContainer;
 		if (!container) return;
 		const view = this.getView(container);
-		const Observer =
-			(view as (Window & { MutationObserver?: typeof MutationObserver }) | null)?.MutationObserver ??
-			MutationObserver;
+		// 设置独立窗口时必须取该 Window 自己的构造器（见 WindowWithObserver 说明）
+		const Observer: typeof MutationObserver =
+			(view as WindowWithObserver | null)?.MutationObserver ?? MutationObserver;
 		const observer = new Observer((mutations: MutationRecord[]) => {
 			if (mutations.some((mutation) => this.shouldReconcileMutation(mutation))) {
 				this.scheduleReconcile();
