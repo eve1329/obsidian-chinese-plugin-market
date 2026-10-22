@@ -82,8 +82,37 @@ export function renderCssSnippetRow(
 
 	const toggle = new ToggleComponent(controlEl);
 	toggle.setValue(snippet.enabled);
+	let displayedEnabled = snippet.enabled;
+	let pending = false;
 	toggle.onChange((enabled) => {
-		void store.setSnippetEnabled(snippet.baseName, enabled);
+		// Obsidian 的 ToggleComponent 会先乐观切换 DOM。等待平台层确认后再保留，
+		// 失败则立即恢复真实值；pending 期间的重复点击不会把旧快照再次写回。
+		if (pending) {
+			toggle.setValue(displayedEnabled);
+			return;
+		}
+		pending = true;
+		void Promise.resolve(store.setSnippetEnabled(snippet.baseName, enabled))
+			.then((result) => {
+				const current = store
+					.listSnippets()
+					.find((item) => item.baseName === snippet.baseName)?.enabled;
+				const success = result !== false;
+				displayedEnabled = success ? (current ?? enabled) : (current ?? displayedEnabled);
+				toggle.setValue(displayedEnabled);
+				if (!success) {
+					new Notice(pickLang("manage.toggle.fail", { name: snippet.baseName }));
+				}
+				ctx.onFilterChange();
+			})
+			.catch((error) => {
+				toggle.setValue(displayedEnabled);
+				logger.warn("[Chinese Plugin Market] CSS 片段开关回滚失败：", error);
+				new Notice(pickLang("manage.toggle.fail", { name: snippet.baseName }));
+			})
+			.finally(() => {
+				pending = false;
+			});
 	});
 
 	const groupBtn = createEl("button", { cls: "cpm-group-btn clickable-icon" });

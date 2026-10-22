@@ -39,7 +39,8 @@ export interface CssStorePort {
 	/** 列出全部 CSS 片段（含启用状态），用于精确识别外观页行 */
 	listSnippets(): SnippetInfo[];
 	/** 切换片段启用状态 */
-	setSnippetEnabled(baseName: string, enabled: boolean): Promise<void>;
+	/** 返回 false 表示平台层未确认切换成功；旧宿主实现返回 void 也视为已提交。 */
+	setSnippetEnabled(baseName: string, enabled: boolean): Promise<boolean | void>;
 	/** 重命名片段文件（同步启用状态与元数据 key） */
 	renameSnippet(oldBase: string, newBase: string): Promise<void>;
 	/** 用系统默认应用打开片段源文件 */

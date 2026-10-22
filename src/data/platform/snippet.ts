@@ -25,15 +25,27 @@ export function snippetDir(app: App): string {
 /**
  * 读取当前已启用 CSS 片段集合。
  *
- * 优先使用 Obsidian 内部 `customCss.enabledSnippets`（Set）。
- * 部分旧版 Obsidian 无此字段，且 `customCss.snippets` 是「检测到的全部」而非
- * 「已启用」，直接 fallback 会导致所有片段被误判为启用。此时从 appearance.json
- * 的 `enabledCssSnippets` 数组读取真实启用状态。
+ * 优先使用运行时 `customCss.enabledSnippets`。独立设置窗口刚打开时，这个集合
+ * 可能来自另一个 JS realm，或者暂时为空；首次读取遇到这种启动窗口时，使用
+ * `appearance.json` 补齐持久化状态。后续读取仍以运行时集合为准，避免关闭最后
+ * 一个片段后被旧的 appearance.json 内容重新打开。`customCss.snippets` 是「检测到
+ * 的全部」而非「已启用」，不能拿来推断开关。
  */
-async function readEnabledSnippets(app: App): Promise<Set<string>> {
-	const cc = asAppInternals(app).customCss;
-	if (cc?.enabledSnippets instanceof Set) return cc.enabledSnippets;
+function copyEnabledSnippets(value: unknown): Set<string> | null {
+	if (!value || typeof value !== "object") return null;
+	const result = new Set<string>();
+	const candidate = value as { forEach?: unknown };
+	if (typeof candidate.forEach === "function") {
+		// 原生 Set 的 forEach 依赖接收者；显式保留另一个 realm 的原对象。
+		candidate.forEach.call(value, (name: unknown) => {
+			if (typeof name === "string") result.add(name.replace(/\.css$/i, ""));
+		});
+		return result;
+	}
+	return null;
+}
 
+async function readPersistedEnabledSnippets(app: App): Promise<Set<string> | null> {
 	const cfgDir = app.vault.configDir;
 	try {
 		const text = await app.vault.adapter.read(`${cfgDir}/appearance.json`);
@@ -41,9 +53,25 @@ async function readEnabledSnippets(app: App): Promise<Set<string>> {
 		const arr = Array.isArray(data?.enabledCssSnippets) ? data.enabledCssSnippets : [];
 		return new Set(arr.map((n) => n.replace(/\.css$/i, "")));
 	} catch (error) {
-		logger.warn("[Chinese Plugin Market] 读取 appearance.json 失败，CSS 启用状态可能不准确:", error);
-		return new Set();
+		logger.warn("[Chinese Plugin Market] 读取 appearance.json 失败，CSS 启用状态将使用运行时集合:", error);
+		return null;
 	}
+}
+
+/**
+ * 读取真实启用集合。enabledSnippets 可能来自设置独立窗口的另一个 JS realm，
+ * 因此不能用 `instanceof Set`。启动阶段运行时集合还可能暂时为空，而
+ * appearance.json 已有上一份持久化状态；此时以持久化集合补齐，避免首次打开全关。
+ */
+async function readEnabledSnippets(app: App): Promise<Set<string>> {
+	const cc = asAppInternals(app).customCss;
+	const runtime = copyEnabledSnippets(cc?.enabledSnippets);
+	const persisted = await readPersistedEnabledSnippets(app);
+	if (!runtime) return persisted ?? new Set();
+	const firstRead = !enabledStateInitialized.get(app);
+	enabledStateInitialized.set(app, true);
+	if (firstRead && runtime.size === 0 && (persisted?.size ?? 0) > 0) return persisted!;
+	return runtime;
 }
 
 export interface SnippetInfo {
@@ -64,6 +92,8 @@ export interface SnippetInfo {
  * 由调用方在合适的时机调 refreshSnippets 预扫，listSnippets 同步读镜像。
  */
 const snippetCache = new WeakMap<App, SnippetInfo[]>();
+const refreshGeneration = new WeakMap<App, number>();
+const enabledStateInitialized = new WeakMap<App, boolean>();
 
 /**
  * 同步读取片段清单镜像（UI 渲染用）。
@@ -85,6 +115,8 @@ export function listSnippets(app: App): SnippetInfo[] {
  * Obsidian 自身加载片段同样是 `adapter.list(<configDir>/snippets)`。
  */
 export async function refreshSnippets(app: App): Promise<SnippetInfo[]> {
+	const generation = (refreshGeneration.get(app) ?? 0) + 1;
+	refreshGeneration.set(app, generation);
 	const dir = snippetDir(app);
 	const enabled = await readEnabledSnippets(app);
 	const byBase = new Map<string, string>();
@@ -109,7 +141,8 @@ export async function refreshSnippets(app: App): Promise<SnippetInfo[]> {
 		path: `${dir}/${fileName}`,
 	})).sort((a, b) => a.baseName.localeCompare(b.baseName));
 
-	snippetCache.set(app, list);
+	// 旧的 adapter.list / appearance.json 读取完成后，不能覆盖较新的扫描结果。
+	if (refreshGeneration.get(app) === generation) snippetCache.set(app, list);
 	return list;
 }
 
@@ -143,13 +176,37 @@ async function listSnippetFileNames(app: App, dir: string): Promise<SnippetFileN
 	}
 }
 
-/** 某个片段是否启用（优先 app.customCss.enabledSnippets，否则读缓存/appearance.json） */
+/** 某个片段是否启用（优先运行时集合；没有运行时集合时以最近一次扫描缓存为准） */
 export function isSnippetEnabled(app: App, baseName: string): boolean {
 	const cc = asAppInternals(app).customCss;
-	if (cc?.enabledSnippets instanceof Set) return cc.enabledSnippets.has(baseName);
+	const runtime = copyEnabledSnippets(cc?.enabledSnippets);
+	if (runtime) return runtime.has(baseName);
 	// 无运行时集合时，以最近一次 refreshSnippets 缓存为准
 	const cached = snippetCache.get(app)?.find((s) => s.baseName === baseName);
 	return cached?.enabled ?? false;
+}
+
+/**
+ * Obsidian 的 setCssEnabledStatus 会触发异步配置保存 / CSS 重载。等待一次扫描
+ * 确认目标值，避免 UI 在旧快照上显示成功；目标文件不存在时立即失败，避免
+ * 对明显无效的切换无意义地等待。
+ */
+async function waitForSnippetState(
+	app: App,
+	baseName: string,
+	enabled: boolean,
+): Promise<boolean> {
+	const attempts = 8;
+	for (let attempt = 0; attempt < attempts; attempt += 1) {
+		const list = await refreshSnippets(app);
+		const target = list.find((snippet) => snippet.baseName === baseName);
+		if (!target) return false;
+		if (target.enabled === enabled) return true;
+		if (attempt < attempts - 1) {
+			await new Promise<void>((resolve) => window.setTimeout(resolve, 25));
+		}
+	}
+	return false;
 }
 
 /** 切换片段启用状态（调用 Obsidian 内部 setCssEnabledStatus(name, enabled) 并刷新应用） */
@@ -157,11 +214,11 @@ export async function setSnippetEnabled(
 	app: App,
 	baseName: string,
 	enabled: boolean,
-): Promise<void> {
+): Promise<boolean> {
 	const cc = asAppInternals(app).customCss;
 	if (!cc?.setCssEnabledStatus) {
 		logger.warn("[Chinese Plugin Market] app.customCss.setCssEnabledStatus 不可用，跳过切换");
-		return;
+		return false;
 	}
 	try {
 		cc.setCssEnabledStatus(baseName, enabled);
@@ -169,8 +226,19 @@ export async function setSnippetEnabled(
 		// 必须手动触发加载，否则命令面板 / 设置页开关看起来「点了没反应」。
 		if (cc.requestLoadSnippetsDebouncer) cc.requestLoadSnippetsDebouncer();
 		else if (cc.loadSnippets) cc.loadSnippets();
+		const confirmed = await waitForSnippetState(app, baseName, enabled);
+		if (!confirmed) {
+			logger.warn("[Chinese Plugin Market] CSS 片段切换后状态未确认:", {
+				baseName,
+				expected: enabled,
+				actual: listSnippets(app).find((snippet) => snippet.baseName === baseName)?.enabled,
+			});
+			return false;
+		}
+		return true;
 	} catch (error) {
 		logger.warn("[Chinese Plugin Market] 切换 CSS 片段启用失败:", error);
+		return false;
 	}
 }
 

@@ -93,8 +93,8 @@ export interface AppSetting {
 export interface AppCustomCss {
 	/** 检测到的全部片段名（无 .css 后缀）；旧版中也作为已启用列表使用 */
 	snippets?: string[];
-	/** 当前已启用的 CSS 片段集合（Obsidian 新版优先使用） */
-	enabledSnippets?: Set<string>;
+	/** 当前已启用的 CSS 片段集合（Obsidian 新版优先使用）。弹出设置窗口可能来自另一个 JS realm。 */
+	enabledSnippets?: Set<string> | { has?: (name: string) => boolean; forEach?: (cb: (name: string) => void) => void };
 	/**
 	 * 切换 CSS 片段启用状态。Obsidian 内部签名 (name, enabled)，
 	 * name 为片段基名（无 .css）。

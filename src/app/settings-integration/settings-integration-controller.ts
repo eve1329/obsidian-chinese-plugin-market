@@ -80,6 +80,8 @@ export class SettingsIntegrationController {
 	private lastTabId: string | null = null;
 	/** 已对该外观页根元素扫过一次片段（防止 reconcile 自激无限重扫） */
 	private scannedRootEl: HTMLElement | null = null;
+	/** 丢弃切页后才返回的旧异步扫描回调 */
+	private scanGeneration = 0;
 
 	constructor(
 		private readonly app: App,
@@ -116,6 +118,8 @@ export class SettingsIntegrationController {
 		this.cssEnhancer.cleanup();
 		this.cleanupSignature = "";
 		this.cssCleanupSignature = "";
+		this.scanGeneration += 1;
+		this.scannedRootEl = null;
 		this.setting = undefined;
 	}
 
@@ -186,19 +190,24 @@ export class SettingsIntegrationController {
 	private ensureSnippetsScanned(rootEl: HTMLElement): void {
 		if (this.scannedRootEl === rootEl) return;
 		this.scannedRootEl = rootEl;
+		const generation = ++this.scanGeneration;
 		void this.cssStore
 			.refreshSnippets()
 			.catch((error) => {
-				this.scannedRootEl = null;
+				if (this.scanGeneration === generation) this.scannedRootEl = null;
 				logger.warn("[Chinese Plugin Market] 重扫 CSS 片段失败:", error);
 			})
-			.finally(() => this.scheduleReconcile());
+			.finally(() => {
+				if (this.scanGeneration === generation) this.scheduleReconcile();
+			});
 	}
 
 	private scheduleReconcile(): void {
 		const setting = this.setting;
 		if (!setting || this.frameId !== null) return;
-		this.frameId = window.requestAnimationFrame(() => {
+		const view = this.getView(setting.tabContentContainer);
+		const requestAnimationFrame = view?.requestAnimationFrame?.bind(view) ?? window.requestAnimationFrame.bind(window);
+		this.frameId = requestAnimationFrame(() => {
 			this.frameId = null;
 			this.reconcile();
 		});
@@ -206,8 +215,15 @@ export class SettingsIntegrationController {
 
 	private cancelScheduledReconcile(): void {
 		if (this.frameId === null) return;
-		window.cancelAnimationFrame(this.frameId);
+		const view = this.getView(this.setting?.tabContentContainer);
+		const cancelAnimationFrame = view?.cancelAnimationFrame?.bind(view) ?? window.cancelAnimationFrame.bind(window);
+		cancelAnimationFrame(this.frameId);
 		this.frameId = null;
+	}
+
+	/** 设置独立窗口的 DOM 来自其自己的 Window；不要混用主窗口的定时器。 */
+	private getView(root: HTMLElement | undefined): Window | null {
+		return root?.ownerDocument?.defaultView ?? null;
 	}
 
 	// ── 观察 ──
@@ -215,24 +231,29 @@ export class SettingsIntegrationController {
 	private observe(setting: NonNullable<typeof this.setting>): void {
 		const container = setting.tabContentContainer;
 		if (!container) return;
-		this.observer = new MutationObserver((mutations) => {
+		const view = this.getView(container);
+		const Observer =
+			(view as (Window & { MutationObserver?: typeof MutationObserver }) | null)?.MutationObserver ??
+			MutationObserver;
+		const observer = new Observer((mutations: MutationRecord[]) => {
 			if (mutations.some((mutation) => this.shouldReconcileMutation(mutation))) {
 				this.scheduleReconcile();
 			}
 		});
-		this.observer.observe(container, {
+		observer.observe(container, {
 			childList: true,
 			subtree: true,
 			attributes: true,
 			attributeFilter: ["class"],
 			attributeOldValue: true,
 		});
+		this.observer = observer;
 	}
 
 	private shouldReconcileMutation(mutation: MutationRecord): boolean {
 		if (this.isReconciling) return false;
 		const targetEl =
-			mutation.target.nodeType === Node.ELEMENT_NODE
+			mutation.target.nodeType === 1
 				? (mutation.target as Element)
 				: mutation.target.parentElement;
 		if (targetEl?.closest(OWNED_ELEMENT_SELECTOR)) return false;
@@ -243,12 +264,12 @@ export class SettingsIntegrationController {
 
 		if (mutation.type === "childList") {
 			const removed = Array.from(mutation.removedNodes).filter(
-				(node) => node.nodeType === Node.ELEMENT_NODE,
+				(node) => node.nodeType === 1,
 			) as Element[];
 			if (removed.some((el) => el.matches(OWNED_ELEMENT_SELECTOR))) return true;
 
 			const added = Array.from(mutation.addedNodes).filter(
-				(node) => node.nodeType === Node.ELEMENT_NODE,
+				(node) => node.nodeType === 1,
 			) as Element[];
 			if (added.length > 0 && added.every((el) => el.closest(OWNED_ELEMENT_SELECTOR))) {
 				return false;
