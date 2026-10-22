@@ -150,7 +150,7 @@ describe("snippet 平台层", () => {
 		expect(list[0].path).toBe(".myconf/snippets/x.css");
 	});
 
-	it("adapter.list 失败时兜底：vault 文件树 + customCss 已启用名单", async () => {
+	it("adapter.list 失败时退回 customCss 启用清单（不再枚举全 vault）", async () => {
 		const app = makeApp({
 			enabled: ["enabled-only"],
 			files: [{ path: ".obsidian/snippets/on-disk.css", name: "on-disk.css" }],
@@ -158,8 +158,11 @@ describe("snippet 平台层", () => {
 		});
 		const list = await refreshSnippets(app as never);
 		const names = list.map((s) => s.baseName);
+		// 降级路径只回退 customCss 的启用清单；不再调用 vault.getFiles 枚举全 vault 文件树。
+		// 注意：on-disk.css 位于 <configDir>/snippets，本就不在 vault 文件树内，
+		// 即便真去枚举也永远找不到（此前那段 fallback 是死代码），故此处不应出现。
 		expect(names).toContain("enabled-only");
-		expect(names).toContain("on-disk");
+		expect(names).not.toContain("on-disk");
 	});
 
 	it("adapter.list 成功时只显示真实文件，不列出已启用但已删除的幽灵片段", async () => {

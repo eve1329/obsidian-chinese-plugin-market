@@ -6,7 +6,7 @@
  * 失败只 warn，绝不抛给原生事件链。
  */
 
-import type { App, TFile } from "obsidian";
+import type { App } from "obsidian";
 import { asAppInternals } from "./obsidian-internals";
 import { logger } from "@shared/logger";
 
@@ -115,11 +115,21 @@ export async function refreshSnippets(app: App): Promise<SnippetInfo[]> {
 
 interface SnippetFileNames {
 	files: string[];
-	/** 为 true 表示 adapter.list 抛错，已退回到 vault 文件树枚举 */
+	/** 为 true 表示 adapter.list 抛错（目录读取失败），由上层退回 customCss 启用清单 */
 	fallback: boolean;
 }
 
-/** 读取 snippets 目录下的 .css 文件名；adapter.list 不可用时退回 vault 文件树 */
+/**
+ * 读取 snippets 目录下的 .css 文件名。
+ *
+ * 只枚举目标目录（adapter.list(dir)），不调用 vault.getFiles / getMarkdownFiles 等枚举
+ * 全 vault 的 API —— 后者既会暴露 vault 内所有文件路径（Vault Enumeration 安全告警），
+ * 在本场景下又是死代码：CSS 片段位于 <configDir>/snippets（默认 .obsidian/snippets），
+ * 该目录本就【不在】vault 文件树中，getFiles() 的结果里永远不会有它，fallback 恒返回空。
+ *
+ * adapter.list 失败时无法得知真实文件，返回空 + fallback:true，由 refreshSnippets 退回到
+ * customCss 的启用清单，避免「本插件显示 0 个片段」的错位。
+ */
 async function listSnippetFileNames(app: App, dir: string): Promise<SnippetFileNames> {
 	try {
 		const listing = await app.vault.adapter.list(dir);
@@ -128,15 +138,8 @@ async function listSnippetFileNames(app: App, dir: string): Promise<SnippetFileN
 			.filter((name) => name.toLowerCase().endsWith(".css"));
 		return { files, fallback: false };
 	} catch (error) {
-		logger.warn("[Chinese Plugin Market] 扫描 CSS 片段目录失败，退回 vault 文件树:", error);
-		const files = app.vault
-			.getFiles()
-			.filter(
-				(f): f is TFile =>
-					f.path.startsWith(`${dir}/`) && f.path.toLowerCase().endsWith(".css"),
-			)
-			.map((f) => f.name);
-		return { files, fallback: true };
+		logger.warn("[Chinese Plugin Market] 扫描 CSS 片段目录失败，退回 customCss 启用清单:", error);
+		return { files: [], fallback: true };
 	}
 }
 
