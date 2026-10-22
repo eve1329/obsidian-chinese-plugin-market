@@ -161,6 +161,9 @@ export class SnippetListEnhancer {
 		for (const snippet of this.snippets) {
 			const rowEl = createDiv({ cls: "cpm-css-settings-row setting-item" });
 			rowEl.dataset.cpmSnippet = snippet.baseName;
+			// 自渲染行属于插件所有 DOM：否则下一轮 reconcile 会把它当成
+			// 「无法识别的原生 .css 行」，删除整个列表并丢失开关状态。
+			rowEl.setAttribute(OWNED_ATTR, ROW_OWNER);
 			// 标记为已增强：避免 getRows 把自渲染行当成原生行二次注入
 			rowEl.setAttribute(ENHANCED_ATTR, "true");
 			listEl.appendChild(rowEl);
@@ -222,6 +225,8 @@ export class SnippetListEnhancer {
 		}
 		const toolbar = createDiv({ cls: "cpm-filter-bar cpm-css-toolbar" });
 		toolbar.setAttribute(OWNED_ATTR, "css-toolbar");
+		// 新版 Obsidian 的汇总行整体可点击；工具栏交互只能操作筛选，不能打开子页。
+		toolbar.addEventListener("click", (event: MouseEvent) => event.stopPropagation());
 		toolbar.appendChild(this.filterBar.containerEl);
 		// 锚定到「CSS 代码片段」区块的 .setting-item-info 内（紧跟描述），
 		// 保证工具栏与标题文字左对齐；找不到则退回标题后或根

@@ -1913,6 +1913,7 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 		const flushSave = () => { void this.flushSaveSettings(); };
 		const requestRefresh = () => this.settingsIntegration?.requestRefresh();
 		const refreshToggleCommands = () => this.refreshSnippetToggleCommands();
+		const pendingToggles = new Map<string, Promise<boolean>>();
 		return {
 			get settings() {
 				return settings;
@@ -1941,8 +1942,24 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 				return listSnippets(app);
 			},
 			async setSnippetEnabled(baseName, enabled) {
-				await setSnippetEnabled(app, baseName, enabled);
-				requestRefresh();
+				// 同一片段的快速连续点击按顺序执行，避免旧的异步扫描结果覆盖新状态。
+				const previous = pendingToggles.get(baseName) ?? Promise.resolve(true);
+				const operation = previous
+					.catch(() => false)
+					.then(async () => {
+						const ok = await setSnippetEnabled(app, baseName, enabled);
+						// 平台层已刷新缓存；这里再从同一状态源重读一次 UI，保证计数、筛选、
+						// 自渲染行 key 与原生状态都以最新快照为准。失败时这一步也会回滚显示。
+						await refreshSnippets(app);
+						requestRefresh();
+						return ok;
+					});
+				pendingToggles.set(baseName, operation);
+				try {
+					return await operation;
+				} finally {
+					if (pendingToggles.get(baseName) === operation) pendingToggles.delete(baseName);
+				}
 			},
 			async renameSnippet(oldBase, newBase) {
 				// 与 createSnippet 对齐：renameSnippet 内部虽已有兜底校验（抛错），

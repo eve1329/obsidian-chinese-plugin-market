@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { runInNewContext } from "node:vm";
 import {
 	listSnippets,
 	refreshSnippets,
@@ -200,6 +201,75 @@ describe("snippet 平台层", () => {
 		expect(list.find((s) => s.baseName === "b")?.enabled).toBe(true);
 	});
 
+	it("原生跨 realm Set 保留 forEach 接收者，运行时状态优先且关闭最后一项后不读取旧状态", async () => {
+		const app = makeApp({
+			enabled: ["stale"],
+			files: [
+				{ path: ".obsidian/snippets/active.css", name: "active.css" },
+				{ path: ".obsidian/snippets/stale.css", name: "stale.css" },
+			],
+		});
+		const enabled = runInNewContext('new Set(["active"])') as Set<string>;
+		expect(enabled instanceof Set).toBe(false);
+		app.customCss.enabledSnippets = enabled;
+		app.customCss.setCssEnabledStatus = (name, value) => {
+			if (value) enabled.add(name);
+			else enabled.delete(name);
+		};
+
+		const list = await refreshSnippets(app as never);
+		expect(list.filter((snippet) => snippet.enabled).map((snippet) => snippet.baseName)).toEqual(["active"]);
+		expect(isSnippetEnabled(app as never, "active")).toBe(true);
+		expect(isSnippetEnabled(app as never, "stale")).toBe(false);
+
+		expect(await setSnippetEnabled(app as never, "active", false)).toBe(true);
+		expect(isSnippetEnabled(app as never, "active")).toBe(false);
+		expect(listSnippets(app as never).filter((snippet) => snippet.enabled)).toEqual([]);
+		expect(app.__enabled.has("stale")).toBe(true);
+	});
+
+	it("原生跨 realm Set 启动时为空时，以 appearance.json 补齐初始状态", async () => {
+		const app = makeApp({
+			enabled: ["fix-print-cjk-font", "Hide blocks id", "Hide the title"],
+			files: [
+				{ path: ".obsidian/snippets/fix-print-cjk-font.css", name: "fix-print-cjk-font.css" },
+				{ path: ".obsidian/snippets/Hide blocks id.css", name: "Hide blocks id.css" },
+				{ path: ".obsidian/snippets/Hide the title.css", name: "Hide the title.css" },
+				{ path: ".obsidian/snippets/inline-code-red.css", name: "inline-code-red.css" },
+			],
+		});
+		// 使用真正的另一个 realm 的原生 Set，避免 mock 掩盖接收者绑定错误。
+		app.customCss.enabledSnippets = runInNewContext("new Set()") as Set<string>;
+		expect(app.customCss.enabledSnippets instanceof Set).toBe(false);
+		const list = await refreshSnippets(app as never);
+		expect(list.filter((s) => s.enabled).map((s) => s.baseName).sort()).toEqual([
+			"Hide blocks id",
+			"Hide the title",
+			"fix-print-cjk-font",
+		].sort());
+	});
+
+	it("并发扫描不会让旧结果覆盖新结果", async () => {
+		const app = makeApp({ enabled: ["old"], files: [] });
+		let releaseFirst!: () => void;
+		const first = new Promise<void>((resolve) => (releaseFirst = resolve));
+		const originalList = app.vault.adapter.list;
+		let calls = 0;
+		app.vault.adapter.list = async (path) => {
+			calls += 1;
+			if (calls === 1) await first;
+			return originalList(path);
+		};
+		const oldScan = refreshSnippets(app as never);
+		app.__enabled.delete("old");
+		app.__enabled.add("new");
+		app.vault.adapter.list = async (path) => ({ files: [`${path}/new.css`] });
+		const newScan = refreshSnippets(app as never);
+		releaseFirst();
+		await Promise.all([oldScan, newScan]);
+		expect(listSnippets(app as never).map((s) => s.baseName)).toEqual(["new"]);
+	});
+
 	it("setSnippetEnabled 调用 setCssEnabledStatus(name, enabled) 并刷新 CSS", async () => {
 		const calls: unknown[][] = [];
 		const app = makeApp();
@@ -228,6 +298,20 @@ describe("snippet 平台层", () => {
 		};
 		await setSnippetEnabled(app as never, "foo", true);
 		expect(calls).toEqual(["set", "debounce"]);
+	});
+
+	it("setSnippetEnabled 等待真实状态并支持连续开启、关闭", async () => {
+		const app = makeApp({
+			enabled: [],
+			files: [{ path: ".obsidian/snippets/inline-code-red.css", name: "inline-code-red.css" }],
+		});
+		const enabled = await setSnippetEnabled(app as never, "inline-code-red", true);
+		expect(enabled).toBe(true);
+		expect(listSnippets(app as never).find((s) => s.baseName === "inline-code-red")?.enabled).toBe(true);
+
+		const disabled = await setSnippetEnabled(app as never, "inline-code-red", false);
+		expect(disabled).toBe(true);
+		expect(listSnippets(app as never).find((s) => s.baseName === "inline-code-red")?.enabled).toBe(false);
 	});
 
 	it("renameSnippet 复制内容到新文件、删旧文件、同步启用状态，并刷新清单", async () => {

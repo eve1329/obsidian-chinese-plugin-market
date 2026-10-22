@@ -43,15 +43,18 @@ function buildDom(): HTMLElement {
 function createStore(opts: {
 	snippets?: string[];
 	meta?: Record<string, PluginMetaEntry>;
+	enabled?: string[];
+	failToggle?: boolean;
 } = {}): CssStorePort {
 	let settings: ManageSettings = {
 		...createDefaultManageSettings(),
 		cssMeta: opts.meta ?? {},
 	};
+	const enabled = new Set(opts.enabled ?? [opts.snippets?.[0] ?? "alpha"]);
 	const snippets: SnippetInfo[] = (opts.snippets ?? ["alpha", "beta"]).map((b) => ({
 		name: `${b}.css`,
 		baseName: b,
-		enabled: true,
+		enabled: enabled.has(b),
 		path: `.obsidian/snippets/${b}.css`,
 	}));
 	return {
@@ -68,7 +71,13 @@ function createStore(opts: {
 		saveCssFilterState() {},
 		refreshSnippets: async () => {},
 		listSnippets: () => snippets,
-		setSnippetEnabled: async () => {},
+		setSnippetEnabled: async (baseName, value) => {
+			if (opts.failToggle) return false;
+			enabled[value ? "add" : "delete"](baseName);
+			const item = snippets.find((s) => s.baseName === baseName);
+			if (item) item.enabled = value;
+			return true;
+		},
 		renameSnippet: async () => {},
 		createSnippet: async () => {},
 		deleteSnippet: async () => {},
@@ -82,6 +91,12 @@ function createStore(opts: {
 
 function rows(root: HTMLElement): HTMLElement[] {
 	return Array.from(root.querySelectorAll<HTMLElement>(".setting-item"));
+}
+
+async function flushToggle(): Promise<void> {
+	// ToggleComponent 的回调是 fire-and-forget；让平台层 Promise 链和重绘回调完成。
+	await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+	await Promise.resolve();
 }
 
 beforeEach(() => {
@@ -255,6 +270,122 @@ describe("SnippetListEnhancer", () => {
 		expect(root.querySelector(".cpm-filter-count")?.textContent).toBe("2 个片段");
 	});
 
+	it("初始部分启用时开关、状态筛选和刷新后的行状态保持一致", async () => {
+		const root = document.createElement("div");
+		root.innerHTML = `
+			<div class="setting-item">
+				<div class="setting-item-info"><div class="setting-item-name">CSS 代码片段</div></div>
+				<div class="setting-item-control">已启用 1 个</div>
+			</div>
+		`;
+		document.body.appendChild(root);
+		const store = createStore({ snippets: ["alpha", "beta"], enabled: ["alpha"] });
+		const enhancer = new SnippetListEnhancer(store, {
+			onManageGroups: () => {},
+			requestRenameSnippet: () => {},
+		});
+		enhancer.enhance(root);
+
+		const ownList = root.querySelector<HTMLElement>('[data-cpm-owned="css-rows"]')!;
+		const betaRow = ownList.querySelector<HTMLElement>('[data-cpm-snippet="beta"]')!;
+		expect(betaRow.querySelector(".checkbox-container.is-enabled")).toBeNull();
+
+		const status = root.querySelector<HTMLSelectElement>(".cpm-filter-status")!;
+		status.value = "enabled";
+		status.dispatchEvent(new Event("change"));
+		expect(betaRow.classList.contains("cpm-filtered-out")).toBe(true);
+
+		const toggle = betaRow.querySelector<HTMLElement>(".checkbox-container")!;
+		toggle.click();
+		await flushToggle();
+		expect(store.listSnippets().find((s) => s.baseName === "beta")?.enabled).toBe(true);
+		expect(betaRow.querySelector(".checkbox-container.is-enabled")).not.toBeNull();
+		expect(betaRow.classList.contains("cpm-filtered-out")).toBe(false);
+
+		// 与原生页刷新等价：增强器重新读取同一份 store 快照，开关不能回到旧值。
+		enhancer.refreshRows();
+		const refreshedBeta = root.querySelector<HTMLElement>('[data-cpm-snippet="beta"]')!;
+		expect(refreshedBeta.querySelector(".checkbox-container.is-enabled")).not.toBeNull();
+
+		// 第二次点击必须真正关闭，而不是再次把旧的开启状态写回。
+		refreshedBeta.querySelector<HTMLElement>(".checkbox-container")!.click();
+		await flushToggle();
+		expect(store.listSnippets().find((s) => s.baseName === "beta")?.enabled).toBe(false);
+		enhancer.refreshRows();
+		const closedBeta = root.querySelector<HTMLElement>('[data-cpm-snippet="beta"]')!;
+		expect(closedBeta.querySelector(".checkbox-container.is-enabled")).toBeNull();
+		expect(closedBeta.classList.contains("cpm-filtered-out")).toBe(true);
+	});
+
+	it("筛选与重复增强只改变可见行，不写入片段启用状态", () => {
+		const root = document.createElement("div");
+		root.innerHTML = `
+			<div class="setting-item">
+				<div class="setting-item-info"><div class="setting-item-name">CSS 代码片段</div></div>
+				<div class="setting-item-control">已启用 3 个</div>
+			</div>
+		`;
+		document.body.appendChild(root);
+		const original = ["alpha", "beta", "gamma"];
+		const disabled = ["delta", "epsilon", "zeta", "eta"];
+		const store = createStore({ snippets: [...original, ...disabled], enabled: original });
+		let toggleWrites = 0;
+		const setEnabled = store.setSnippetEnabled;
+		store.setSnippetEnabled = (...args) => {
+			toggleWrites += 1;
+			return setEnabled(...args);
+		};
+		const enhancer = new SnippetListEnhancer(store, {
+			onManageGroups: () => {},
+			requestRenameSnippet: () => {},
+		});
+		enhancer.enhance(root);
+
+		for (const [status, expected] of [
+			["enabled", original],
+			["disabled", disabled],
+			["all", [...original, ...disabled]],
+		] as const) {
+			const select = root.querySelector<HTMLSelectElement>(".cpm-filter-status")!;
+			select.click();
+			select.value = status;
+			select.dispatchEvent(new Event("change"));
+			enhancer.enhance(root);
+			enhancer.refreshRows();
+			const visible = Array.from(root.querySelectorAll<HTMLElement>(".cpm-css-settings-row"))
+				.filter((row) => !row.classList.contains("cpm-filtered-out"))
+				.map((row) => row.dataset.cpmSnippet);
+			expect(visible).toEqual(expected);
+			expect(store.listSnippets().filter((s) => s.enabled).map((s) => s.baseName)).toEqual(original);
+			expect(toggleWrites).toBe(0);
+		}
+
+		// 重开设置页会重建 ToggleComponent，同样不能触发启用写入。
+		enhancer.cleanup();
+		enhancer.enhance(root);
+		expect(root.querySelectorAll(".checkbox-container.is-enabled")).toHaveLength(3);
+		expect(toggleWrites).toBe(0);
+	});
+
+	it("切换失败时开关回滚到真实状态并保留筛选结果", async () => {
+		const root = document.createElement("div");
+		root.innerHTML = `
+			<div class="setting-item"><div class="setting-item-name">CSS 代码片段</div></div>
+		`;
+		document.body.appendChild(root);
+		const store = createStore({ snippets: ["alpha"], enabled: [], failToggle: true });
+		const enhancer = new SnippetListEnhancer(store, {
+			onManageGroups: () => {},
+			requestRenameSnippet: () => {},
+		});
+		enhancer.enhance(root);
+		const row = root.querySelector<HTMLElement>('[data-cpm-snippet="alpha"]')!;
+		row.querySelector<HTMLElement>(".checkbox-container")!.click();
+		await flushToggle();
+		expect(row.querySelector(".checkbox-container.is-enabled")).toBeNull();
+		expect(store.listSnippets().find((s) => s.baseName === "alpha")?.enabled).toBe(false);
+	});
+
 	it("工具栏锚定到「CSS 代码片段」区块标题之后", () => {
 		const root = document.createElement("div");
 		root.innerHTML = `
@@ -278,5 +409,38 @@ describe("SnippetListEnhancer", () => {
 			Node.DOCUMENT_POSITION_FOLLOWING,
 		);
 		expect(heading.nextElementSibling).toBe(toolbar);
+	});
+
+	it("工具栏位于原生可点击汇总行内时，搜索与筛选不会跳进原生子页", () => {
+		const root = document.createElement("div");
+		root.innerHTML = `
+			<div class="setting-item is-clickable">
+				<div class="setting-item-info"><div class="setting-item-name">CSS 代码片段</div></div>
+				<div class="setting-item-control">已启用 1 个</div>
+			</div>
+		`;
+		document.body.appendChild(root);
+		const summary = root.querySelector<HTMLElement>(".setting-item")!;
+		let nativePageOpens = 0;
+		summary.addEventListener("click", () => { nativePageOpens += 1; });
+		const enhancer = new SnippetListEnhancer(createStore(), {
+			onManageGroups: () => {},
+			requestRenameSnippet: () => {},
+		});
+		enhancer.enhance(root);
+
+		const keyword = root.querySelector<HTMLInputElement>(".cpm-filter-keyword")!;
+		keyword.click();
+		keyword.value = "beta";
+		keyword.dispatchEvent(new Event("input"));
+		root.querySelector<HTMLElement>(".cpm-filter-group")!.click();
+		root.querySelector<HTMLElement>(".cpm-filter-status")!.click();
+		expect(nativePageOpens).toBe(0);
+		expect(root.querySelector('[data-cpm-snippet="alpha"]')?.classList.contains("cpm-filtered-out")).toBe(true);
+		expect(root.querySelector('[data-cpm-snippet="beta"]')?.classList.contains("cpm-filtered-out")).toBe(false);
+
+		// 原生汇总行本身仍可打开 Obsidian 的片段子页。
+		summary.click();
+		expect(nativePageOpens).toBe(1);
 	});
 });
