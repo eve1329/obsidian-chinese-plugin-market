@@ -181,11 +181,40 @@ async function listSnippetFileNames(app: App, dir: string): Promise<SnippetFileN
 	}
 }
 
+/**
+ * 单个片段的启用判定（快速路径）。
+ *
+ * 跨 realm 的原生 Set#has 只要 receiver 仍是原对象就能正常工作，因此无需像
+ * copyEnabledSnippets 那样把整个集合复制一遍。isSnippetEnabled 会被逐行调用
+ * （N 行 × M 个启用项），这条路径把渲染期开销从 O(N×M) 降回 O(N)。
+ * 返回 null 表示该对象没有可用的 has（极少见），由调用方退回遍历复制。
+ */
+function hasEnabledSnippet(value: unknown, baseName: string): boolean | null {
+	if (!value || typeof value !== "object") return null;
+	const candidate = value as { has?: unknown };
+	if (typeof candidate.has !== "function") return null;
+	const has = candidate.has as (name: string) => boolean;
+	const base = baseName.replace(/\.css$/i, "");
+	const probe = (name: string): boolean => {
+		try {
+			return has.call(value, name) === true;
+		} catch {
+			return false;
+		}
+	};
+	// 与 copyEnabledSnippets 的归一化口径一致：集合里的条目可能带或不带 .css 后缀
+	return probe(base) || probe(`${base}.css`);
+}
+
 /** 某个片段是否启用（优先运行时集合；没有运行时集合时以最近一次扫描缓存为准） */
 export function isSnippetEnabled(app: App, baseName: string): boolean {
 	const cc = asAppInternals(app).customCss;
-	const runtime = copyEnabledSnippets(cc?.enabledSnippets);
-	if (runtime) return runtime.has(baseName);
+	const value = cc?.enabledSnippets;
+	const fast = hasEnabledSnippet(value, baseName);
+	if (fast !== null) return fast;
+	// 退化路径：对象没有 has 方法（例如被 polyfill 成纯 forEach 容器）
+	const runtime = copyEnabledSnippets(value);
+	if (runtime) return runtime.has(baseName.replace(/\.css$/i, ""));
 	// 无运行时集合时，以最近一次 refreshSnippets 缓存为准
 	const cached = snippetCache.get(app)?.find((s) => s.baseName === baseName);
 	return cached?.enabled ?? false;
@@ -226,11 +255,22 @@ export async function setSnippetEnabled(
 	baseName: string,
 	enabled: boolean,
 ): Promise<boolean> {
+	// 防御性闸门：调用方若把非布尔真值（事件对象 / 字符串 / undefined）当 enabled 传进来，
+	// 开/关语义就变得不确定，一次误传可能把若干片段全部打开。这里直接拒绝，
+	// 不让错误的写入扩散到 Obsidian 的持久化配置。
+	if (typeof enabled !== "boolean" || typeof baseName !== "string" || baseName.length === 0) {
+		logger.warn("[Chinese Plugin Market] 拒绝非法的 CSS 片段切换请求:", { baseName, enabled });
+		return false;
+	}
 	const cc = asAppInternals(app).customCss;
 	if (!cc?.setCssEnabledStatus) {
 		logger.warn("[Chinese Plugin Market] app.customCss.setCssEnabledStatus 不可用，跳过切换");
 		return false;
 	}
+	// 记录切换前的集合规模与目标项状态，供下面的完整性检查比对
+	const before = copyEnabledSnippets(cc.enabledSnippets);
+	const beforeSize = before?.size ?? -1;
+	const wasEnabled = before ? before.has(baseName.replace(/\.css$/i, "")) : null;
 	try {
 		cc.setCssEnabledStatus(baseName, enabled);
 		// setCssEnabledStatus 只改内部状态，不会自动重新加载 CSS；
@@ -238,6 +278,23 @@ export async function setSnippetEnabled(
 		if (cc.requestLoadSnippetsDebouncer) cc.requestLoadSnippetsDebouncer();
 		else if (cc.loadSnippets) cc.loadSnippets();
 		const confirmed = await waitForSnippetState(app, baseName, enabled);
+		// 完整性检查：一次切换最多改动集合中的一个条目。若集合规模跳变，
+		// 说明有其它写入方（宿主自身 / 其它插件 / 并发路径）在同一时刻改这个集合。
+		// 这正是「启用集合意外变成全部片段」类现象的关键线索，必须留下可追溯记录。
+		const after = copyEnabledSnippets(cc.enabledSnippets);
+		if (beforeSize >= 0 && after && wasEnabled !== null) {
+			const expected = beforeSize + (enabled ? (wasEnabled ? 0 : 1) : wasEnabled ? -1 : 0);
+			if (after.size !== expected) {
+				logger.warn("[Chinese Plugin Market] CSS 片段启用集合发生非预期变化:", {
+					baseName,
+					enabled,
+					wasEnabled,
+					beforeSize,
+					afterSize: after.size,
+					expected,
+				});
+			}
+		}
 		if (!confirmed) {
 			logger.warn("[Chinese Plugin Market] CSS 片段切换后状态未确认:", {
 				baseName,
@@ -278,12 +335,15 @@ export async function deleteSnippet(app: App, baseName: string): Promise<void> {
 /**
  * 重命名片段：复制内容到新文件 → 删除旧文件 → 同步启用状态。
  * 旧名仍启用则先启用新名再关闭旧名，避免闪烁与状态丢失。
+ *
+ * @returns 文件改名成功但启用状态未能同步时返回 false，由调用方提示用户。
+ *          文件层面的失败（非法基名 / 读写异常）仍以抛错表达。
  */
 export async function renameSnippet(
 	app: App,
 	oldBase: string,
 	newBase: string,
-): Promise<void> {
+): Promise<boolean> {
 	// 安全闸门：newBase 直接进 `${snippetDir}/${newBase}.css` 拼路径，
 	// 必须在任何读写之前拦截 `../../` 之类越权目标（createSnippet 有同名校验，
 	// 重命名入口历史上漏了，导致同级别 UI 两条写盘路径防护不对称）。
@@ -293,19 +353,36 @@ export async function renameSnippet(
 	}
 	const dir = snippetDir(app);
 	const content = await readSnippetContent(app, `${dir}/${oldBase}.css`);
-	await writeSnippet(app, newBase, content);
-	await deleteSnippet(app, oldBase);
+	// 必须在动文件之前读取启用态：旧文件还在时才是可信来源。
+	// （原实现是「先删旧文件、再读 isSnippetEnabled(oldBase)」——只因为 enabledSnippets
+	// 里还残留着已被删除的旧名才碰巧成立，一旦宿主导入了清理逻辑就会读成未启用。）
 	const wasEnabled = isSnippetEnabled(app, oldBase);
+	await writeSnippet(app, newBase, content);
+	// 启用状态同步失败不得静默：否则重命名后片段会莫名其妙变成「未启用」，
+	// 用户只看到开关自己关了，无从判断原因。
+	let stateSynced = true;
 	if (wasEnabled) {
-		await setSnippetEnabled(app, newBase, true);
-		await setSnippetEnabled(app, oldBase, false);
+		// 先启用新名：此时新文件已写入，状态可被 waitForSnippetState 确认
+		if (!(await setSnippetEnabled(app, newBase, true))) {
+			logger.warn("[Chinese Plugin Market] 重命名后启用新片段失败:", { oldBase, newBase });
+			stateSynced = false;
+		}
+		// 再关闭旧名：必须在删除旧文件【之前】做，否则 waitForSnippetState
+		// 在文件清单里找不到旧名，会直接判失败（永远无法确认）。
+		if (!(await setSnippetEnabled(app, oldBase, false))) {
+			logger.warn("[Chinese Plugin Market] 重命名后关闭旧片段失败:", { oldBase, newBase });
+			stateSynced = false;
+		}
 	}
+	// 状态同步完成后再删除旧文件
+	await deleteSnippet(app, oldBase);
 	// 文件名变了，重新对齐缓存清单供立即渲染（否则列表还是旧名）
 	try {
 		await refreshSnippets(app);
 	} catch (error) {
 		logger.warn("[Chinese Plugin Market] 重命名后刷新 CSS 片段清单失败:", error);
 	}
+	return stateSynced;
 }
 
 /** 在系统文件管理器中打开片段所在目录（桌面端；移动端静默失败） */

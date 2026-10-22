@@ -1021,6 +1021,9 @@ export const STRINGS = {
 	"manage.file.open": { zh: "在文件管理器中打开" },
 	"manage.file.rename": { zh: "重命名片段" },
 	"manage.file.rename.fail": { zh: "重命名失败，详情见控制台日志" },
+	"manage.file.rename.stateFail": {
+		zh: "片段已重命名，但启用状态未能同步，请在原生列表中手动确认开关",
+	},
 	"manage.file.open.fail": { zh: "打开文件失败，详情见控制台日志" },
 	"manage.css.empty.list": {
 		zh: "暂无 CSS 片段，在 vault 的 CSS 片段目录（snippets/）新建 .css 文件后，即可在此分组、备注与筛选。",

@@ -317,12 +317,27 @@ describe("snippet 平台层", () => {
 		expect(listSnippets(app as never).find((s) => s.baseName === "inline-code-red")?.enabled).toBe(false);
 	});
 
+	it("setSnippetEnabled 拒绝非布尔 enabled 与空基名，不写入启用集合", async () => {
+		const app = makeApp({ enabled: [], files: [] });
+		const calls: unknown[][] = [];
+		const realSet = app.customCss.setCssEnabledStatus!;
+		app.customCss.setCssEnabledStatus = (n, e) => {
+			calls.push([n, e]);
+			realSet(n, e);
+		};
+		// 模拟调用方把事件对象 / 字符串误当 enabled 传入
+		expect(await setSnippetEnabled(app as never, "alpha", "false" as never)).toBe(false);
+		expect(await setSnippetEnabled(app as never, "", true)).toBe(false);
+		expect(calls).toEqual([]);
+		expect(app.__enabled.size).toBe(0);
+	});
+
 	it("renameSnippet 复制内容到新文件、删旧文件、同步启用状态，并刷新清单", async () => {
 		const app = makeApp({
 			enabled: ["old"],
 			files: [{ path: ".obsidian/snippets/old.css", name: "old.css" }],
 		});
-		await renameSnippet(app as never, "old", "new");
+		await expect(renameSnippet(app as never, "old", "new")).resolves.toBe(true);
 		expect(app.__writes).toContain(".obsidian/snippets/new.css");
 		expect(app.__removes).toContain(".obsidian/snippets/old.css");
 		expect(app.__enabled.has("new")).toBe(true);
@@ -330,6 +345,28 @@ describe("snippet 平台层", () => {
 		// 重命名后立即重扫：缓存里应是新名
 		expect(listSnippets(app as never).map((s) => s.baseName)).toEqual(["new"]);
 	});
+
+	it(
+		"renameSnippet 启用状态同步失败时返回 false（文件仍完成改名）",
+		async () => {
+			const app = makeApp({
+				enabled: ["old"],
+				files: [{ path: ".obsidian/snippets/old.css", name: "old.css" }],
+			});
+			const realSet = app.customCss.setCssEnabledStatus!;
+			app.customCss.setCssEnabledStatus = (name, value) => {
+				// 故意让「启用新名」不生效，验证超时后不静默、返回 false
+				if (name === "new" && value) return;
+				realSet(name, value);
+			};
+			await expect(renameSnippet(app as never, "old", "new")).resolves.toBe(false);
+			// 文件层面已完成改名：新文件写入、旧文件删除
+			expect(app.__writes).toContain(".obsidian/snippets/new.css");
+			expect(app.__removes).toContain(".obsidian/snippets/old.css");
+		},
+		// waitForSnippetState 的最长等待约 1s，给足余量
+		5000,
+	);
 
 	it("openSnippetInDefaultApp 打开片段所在目录", () => {
 		let opened = "";

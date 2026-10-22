@@ -1968,12 +1968,18 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 					new Notice(pickLang("css.new.invalid"));
 					return;
 				}
+				let stateSynced = true;
 				try {
-					await renameSnippet(app, oldBase, newBase);
+					stateSynced = await renameSnippet(app, oldBase, newBase);
 				} catch (error) {
 					logger.warn("[Chinese Plugin Market] 重命名 CSS 片段失败：", error);
 					new Notice(pickLang("manage.file.rename.fail"));
 					return;
+				}
+				// 文件已改名成功，但启用状态同步失败必须告知用户：
+				// 否则片段会「悄悄变成未启用」，开关自己关掉且没有任何解释。
+				if (stateSynced === false) {
+					new Notice(pickLang("manage.file.rename.stateFail"));
 				}
 				// 同步元数据 key（平台层不碰 manage.cssMeta）
 				const meta = settings.cssMeta;
