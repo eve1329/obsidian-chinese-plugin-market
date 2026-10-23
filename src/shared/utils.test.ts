@@ -16,6 +16,7 @@ import {
 	computePluginDelta,
 	debounce,
 	normalizeBaseUrl,
+	buildOpenAIEndpoint,
 } from "@shared/utils";
 
 /** 测试辅助：延迟 ms 毫秒 */
@@ -822,27 +823,47 @@ describe("normalizeBaseUrl（AI 搜索 404 修复：容忍用户各种填法）"
 		expect(normalizeBaseUrl("https://api.deepseek.com///")).toBe("https://api.deepseek.com");
 	});
 
-	it("剥离已包含的 /v1 段，避免双重拼接", () => {
-		expect(normalizeBaseUrl("https://api.deepseek.com/v1")).toBe("https://api.deepseek.com");
+	it("保留已包含的 /v1 段", () => {
+		expect(normalizeBaseUrl("https://api.deepseek.com/v1")).toBe("https://api.deepseek.com/v1");
 	});
 
-	it("剥离已包含的完整端点路径（chat/embeddings）", () => {
+	it("保留完整端点路径（chat/embeddings）", () => {
 		expect(normalizeBaseUrl("https://api.deepseek.com/v1/chat/completions")).toBe(
-			"https://api.deepseek.com"
+			"https://api.deepseek.com/v1/chat/completions"
 		);
 		expect(normalizeBaseUrl("https://api.deepseek.com/v1/embeddings")).toBe(
-			"https://api.deepseek.com"
+			"https://api.deepseek.com/v1/embeddings"
 		);
 	});
 
-	it("大小写不敏感地处理路径后缀", () => {
+	it("保留路径大小写", () => {
 		expect(normalizeBaseUrl("https://API.DEEPSEEK.COM/V1/CHAT/COMPLETIONS")).toBe(
-			"https://API.DEEPSEEK.COM"
+			"https://API.DEEPSEEK.COM/V1/CHAT/COMPLETIONS"
 		);
 	});
 
 	it("空/未定义输入安全返回空串", () => {
 		expect(normalizeBaseUrl("")).toBe("");
 		expect(normalizeBaseUrl(undefined as unknown as string)).toBe("");
+	});
+});
+
+describe("buildOpenAIEndpoint", () => {
+	it.each([
+		["https://api.deepseek.com", "https://api.deepseek.com/v1"],
+		[" https://api.deepseek.com/// ", "https://api.deepseek.com/v1"],
+		["https://api.openai.com/v1/", "https://api.openai.com/v1"],
+		["https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4"],
+		["https://open.bigmodel.cn/api/paas/v4/chat/completions/", "https://open.bigmodel.cn/api/paas/v4"],
+		["https://open.bigmodel.cn/api/paas/v4/embeddings", "https://open.bigmodel.cn/api/paas/v4"],
+		["https://gateway.example/api/v1", "https://gateway.example/api/v1"],
+		["https://gateway.example/chat/completions", "https://gateway.example"],
+		["https://gateway.example/api", "https://gateway.example/api"],
+		["http://localhost:11434/v1/chat/completions", "http://localhost:11434/v1"],
+	])("%s 保留正确的 API 前缀", (input, prefix) => {
+		expect(buildOpenAIEndpoint(input, "chat/completions")).toBe(`${prefix}/chat/completions`);
+		expect(buildOpenAIEndpoint(input, "embeddings")).toBe(`${prefix}/embeddings`);
+		// Translator 先归一化配置后，结果也必须保持一致。
+		expect(buildOpenAIEndpoint(normalizeBaseUrl(input), "chat/completions")).toBe(`${prefix}/chat/completions`);
 	});
 });

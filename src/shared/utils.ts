@@ -3,22 +3,17 @@
  * 从 main.ts / translator.ts 提取，集中此处便于复用与回归测试。
  */
 
-/**
- * 规范化 OpenAI 兼容接口的 Base URL。
- *
- * 用户填写 Base URL 时常常带尾部斜杠或已含路径段（如
- * `https://api.deepseek.com/v1`、`.../v1/chat/completions`），而请求时
- * 代码会再拼 `/v1/chat/completions` / `/v1/embeddings`，导致出现
- * `.../v1/v1/chat/completions` 这类重复路径 → HTTP 404。
- * 这里统一剥离尾部斜杠与已包含的 `/v1`(及 chat/embeddings 后缀)，
- * 使无论用户怎么填都能拼出正确的端点地址。纯函数，可单测。
- */
+/** 去除首尾空白和尾斜杠，保留服务商的 API 路径及版本。 */
 export function normalizeBaseUrl(raw: string): string {
-	let u = (raw ?? "").trim().replace(/\/+$/, "");
-	u = u.replace(/\/v1\/chat\/completions$/i, "");
-	u = u.replace(/\/v1\/embeddings$/i, "");
-	u = u.replace(/\/v1$/i, "");
-	return u;
+	return (raw ?? "").trim().replace(/\/+$/, "");
+}
+
+/** 根地址默认使用 /v1；显式 API 路径（如智谱 /api/paas/v4）原样保留。 */
+export function buildOpenAIEndpoint(raw: string, resource: "chat/completions" | "embeddings"): string {
+	const base = normalizeBaseUrl(raw);
+	const prefix = base.replace(/\/(?:chat\/completions|embeddings)$/i, "");
+	const hasPath = /^https?:\/\/[^/]+\//i.test(base);
+	return `${prefix}${hasPath ? "" : "/v1"}/${resource}`;
 }
 
 /**

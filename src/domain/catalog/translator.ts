@@ -277,8 +277,7 @@ export class Translator {
 					baseURL: normalizeBaseUrl(config.baseURL) || DEFAULT_AI_BASE_URL,
 					apiKey: config.apiKey?.trim() || "",
 					model: config.model?.trim() || DEFAULT_AI_MODEL,
-					// embedding baseURL 同样允许用户填完整端点（/v1/embeddings），
-					// 这里一并归一化，避免 AISearcher 内部拼接成双重路径导致 401/404。
+					// 向量接口同样保留服务商的 API 路径及版本。
 					embedding: config.embedding
 						? { ...config.embedding, baseURL: normalizeBaseUrl(config.embedding.baseURL ?? "") || DEFAULT_AI_BASE_URL }
 						: undefined,

@@ -11,7 +11,7 @@
 import { logger } from "@shared/logger";
 import { tencentTranslate, type TencentApiConfig } from "@translation/api/tencent-signer";
 import type { TranslateResult, PluginInfo } from "@domain/catalog/translator";
-import { parseJSON, extractLLMContent, supportsJsonMode, normalizeBaseUrl } from "@shared/utils";
+import { parseJSON, extractLLMContent, supportsJsonMode, buildOpenAIEndpoint } from "@shared/utils";
 import { netRequest } from "@data/net/net";
 import {
 	withTimeout,
@@ -417,7 +417,7 @@ export class LLMClient {
 		try {
 			const response = await withTimeout(
 				netRequest({
-					url: `${normalizeBaseUrl(this.config.baseURL)}/v1/chat/completions`,
+					url: buildOpenAIEndpoint(this.config.baseURL, "chat/completions"),
 					method: "POST",
 					headers: {
 						...(this.config.apiKey ? { "Authorization": `Bearer ${this.config.apiKey}` } : {}),

@@ -383,7 +383,7 @@ export const STRINGS = {
 	},
 	"settings.ai.baseUrl": { zh: "API Base URL" },
 	"settings.ai.baseUrl.desc": {
-		zh: "OpenAI 兼容接口地址。默认 DeepSeek，可改为通义千问 / 智谱 / 硅基流动 / 本地模型等。可填根地址（如 https://api.siliconflow.cn）或完整端点（如 https://api.siliconflow.cn/v1/chat/completions），二者等价。",
+		zh: "OpenAI 兼容接口地址。默认 DeepSeek，可改为通义千问 / 智谱 / 硅基流动 / 本地模型等。根地址默认补 /v1；也可填 API 前缀（如智谱 https://open.bigmodel.cn/api/paas/v4）或完整的 /chat/completions 端点，已有路径会保留。",
 
 	},
 	"settings.ai.key": { zh: "API Key" },
@@ -460,7 +460,7 @@ export const STRINGS = {
 	"settings.embedding.local": { zh: "本地模型（离线语义）" },
 	"settings.embedding.baseUrl": { zh: "Embedding Base URL" },
 	"settings.embedding.baseUrl.desc": {
-		zh: "向量接口地址（OpenAI 兼容 /v1/embeddings）。可与聊天接口不同。",
+		zh: "OpenAI 兼容向量接口地址，可与聊天接口不同。根地址默认补 /v1；API 前缀或完整的 /embeddings 端点会保留已有路径。",
 
 	},
 	"settings.embedding.key": { zh: "Embedding API Key" },

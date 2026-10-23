@@ -9,7 +9,7 @@ import {
 } from "obsidian";
 import type ChinesePluginMarket from "@app/main";
 import { makeT, type I18nKey } from "@shared/i18n";
-import { normalizeBaseUrl, isLocalBaseUrl, isAISearchUsable } from "@shared/utils";
+import { buildOpenAIEndpoint, isLocalBaseUrl, isAISearchUsable } from "@shared/utils";
 import { BaiduTranslateClient } from "@translation/api/baidu";
 import { isWebGPUAvailable } from "@semantic/embedding";
 import { asAppInternals } from "@data/platform/obsidian-internals";
@@ -64,7 +64,7 @@ export class TranslatorSettingTab extends PluginSettingTab {
 	/** 测试 AI 连接是否联通（参照竹叶飞刃的做法：发一次最小请求，按 HTTP 状态给友好提示） */
 	private async testAIConnection(): Promise<void> {
 		const s = this.plugin.settings;
-		const baseURL = normalizeBaseUrl(s.aiSearchBaseURL || "https://api.openai.com");
+		const baseURL = buildOpenAIEndpoint(s.aiSearchBaseURL || "https://api.openai.com", "chat/completions");
 		const isLocal = isLocalBaseUrl(s.aiSearchBaseURL || "");
 		// 本地模型（如 Ollama / LM Studio）通常无需 API Key，留空 Key 属合法用法；
 		// 仅当非本地且无 Key 时才拦截。
@@ -78,7 +78,7 @@ export class TranslatorSettingTab extends PluginSettingTab {
 		try {
 			const startTime = Date.now();
 			const response = await requestUrl({
-				url: `${baseURL}/v1/chat/completions`,
+				url: baseURL,
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
