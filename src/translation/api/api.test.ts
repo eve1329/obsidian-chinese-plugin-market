@@ -29,6 +29,21 @@ afterEach(() => {
 	resetHttpClient();
 });
 
+describe("LLMClient · 服务商接口路径", () => {
+	it.each([
+		["https://api.deepseek.com", "https://api.deepseek.com/v1/chat/completions"],
+		["https://open.bigmodel.cn/api/paas/v4/", "https://open.bigmodel.cn/api/paas/v4/chat/completions"],
+		["https://open.bigmodel.cn/api/paas/v4/chat/completions", "https://open.bigmodel.cn/api/paas/v4/chat/completions"],
+		["https://gateway.example/chat/completions", "https://gateway.example/chat/completions"],
+	])("%s 请求正确端点", async (baseURL, url) => {
+		req.mockResolvedValue({ status: 200, json: { choices: [{ message: { content: "你好" } }] } });
+		const client = new LLMClient({ baseURL, apiKey: "test-key", model: "glm-4" });
+		await expect(client.call("system", "hello", 10, false)).resolves.toBe("你好");
+		expect(req).toHaveBeenCalledOnce();
+		expect(req).toHaveBeenCalledWith(expect.objectContaining({ url, method: "POST" }));
+	});
+});
+
 describe("LLMClient · 超时与熔断", () => {
 	it("成功调用后熔断器保持关闭", async () => {
 		req.mockResolvedValue({

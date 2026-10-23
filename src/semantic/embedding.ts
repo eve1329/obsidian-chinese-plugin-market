@@ -13,7 +13,7 @@
  * 本模块只负责「文本 → 向量」的获取（含 HTTP），以及索引缓存的编排。
  */
 
-import { cosineSimilarity, topKBySimilarity, contentHash, normalizeBaseUrl, normalizeVector, mapWithConcurrency } from "@shared/utils";
+import { cosineSimilarity, topKBySimilarity, contentHash, buildOpenAIEndpoint, normalizeVector, mapWithConcurrency } from "@shared/utils";
 import { computeIndexFingerprints } from "@shared/fingerprint";
 import { netRequest } from "@data/net/net";
 import { WorkerLocalBackend } from "@semantic/workers/worker-backend";
@@ -115,9 +115,9 @@ export function createEmbeddingProvider(spec: EmbeddingProviderSpec): EmbeddingP
 }
 
 /**
- * 基于 OpenAI 兼容 /v1/embeddings 的实现。
+ * 基于 OpenAI 兼容 embeddings 端点的实现。
  * 请求/响应遵循 OpenAI 规范：
- *   POST {baseURL}/v1/embeddings  { model, input: string[] }
+ *   POST {API 前缀}/embeddings  { model, input: string[] }（根地址默认补 /v1）
  *   → { data: [{ embedding: number[], index }], ... }
  */
 export class ApiEmbeddingProvider implements EmbeddingProvider {
@@ -164,7 +164,7 @@ export class ApiEmbeddingProvider implements EmbeddingProvider {
 
 	private async embedBatch(batch: string[]): Promise<number[][]> {
 		const response = await netRequest({
-			url: `${normalizeBaseUrl(this.config.baseURL)}/v1/embeddings`,
+			url: buildOpenAIEndpoint(this.config.baseURL, "embeddings"),
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${this.config.apiKey}`,
