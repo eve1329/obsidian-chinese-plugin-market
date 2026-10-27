@@ -18,6 +18,7 @@ const t = makeT();
 import { DirectInstallModal, type BetaKind, type BetaPluginEntry, type InstalledInfo } from "@app/direct-install";
 import { updateAllBetaPlugins, updateBetaEntry } from "@app/beta-updater";
 import { logger } from "@shared/logger";
+import { requestIdle } from "@shared/platform";
 import { Translator, type PluginInfo, type TranslateResult, type DictEntry } from "@domain/catalog/translator";
 import { SettingsTranslator } from "@translation/settings/settings-translator";
 import { type PluginStat } from "@domain/catalog/stats";
@@ -1108,14 +1109,12 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	 * 使视图用最终数据呈现（消除「重启后短暂英文、随后跳变中文」的闪烁）。
 	 */
 	private async initDeferredLoad() {
-		// 预热本地 embedding（local 模式）：提前启动 worker + 加载 bge 模型（~110MB），
-		// 让首次本地语义搜索免冷启动。放在延迟初始化最前面（本方法已在 onLayoutReady 后
-		// 执行，Worker 创建时序已安全），使模型下载与下方 scanVaultTM / loadVectorIndex
-		// 的重 IO 并行，而非等它们串行完成后再开始——缩短首次搜索的实际等待。
-		// 小延迟仅用于让布局先稳定，避免与首屏渲染抢资源；warmup 本身幂等且 fire-and-forget。
-		if (this.settings.embeddingSource === "local") {
-			window.setTimeout(() => this.warmupLocalEmbedding(), 3000);
-		}
+		// 启动期本地模型预热：默认关闭（设置 embeddingWarmupOnStartup，默认 false），
+		// 消除进入界面后约 3 秒的明显卡顿（25MB WASM 编译 + 多线程 worker 派生 + 冷缓存
+		// 135MB 模型下载）。首次搜索/向量检索由 view-data.ts 懒热路径覆盖，无需启动预热。
+		// 开启预热时由 scheduleLocalEmbeddingWarmup 在空闲时段（≤30s）且能力足够时才执行，
+		// 不会抢占启动体验。
+		this.scheduleLocalEmbeddingWarmup();
 		// 启动先把 vault 根旧默认「插件翻译记忆库」静默迁到新落点（默认 .obsidian），避免旧数据丢失。
 		// 必须容错：迁移只是「数据搬家」，失败绝不能中断后面的 scanVaultTM —— 否则
 		// tmApprovedReady 永不 resolve，首屏只能干等 15s 安全阀（曾因 .obsidian/.../tm/
@@ -3087,6 +3086,29 @@ export default class ChinesePluginMarketPlugin extends Plugin {
 	private localWarmupDone = false;
 	/** 下载桥接的源可用性缓存（10 分钟 TTL）：避免对死源反复白等探针/分块超时。 */
 	private bridgeSourceCache: { host: string; at: number } | null = null;
+
+	/**
+	 * 启动期本地模型预热（默认关闭，由设置 embeddingWarmupOnStartup 控制）。
+	 *
+	 * 默认不预热：进入界面后约 3 秒的那股明显卡顿（25MB WASM 编译 + 多线程 worker 派生 +
+	 * 冷缓存下 135MB 模型下载）对多数几天不用一次 AI 搜索的用户是纯代价。首次搜索/向量检索
+	 * 由 view-data.ts 的懒热路径覆盖，无需启动期预热。
+	 *
+	 * 仅当用户显式开启且机器能力足够时才在浏览器空闲时段推迟预热：
+	 * - 低端机（hardwareConcurrency < 4）spawn 多线程 worker 更伤，跳过；
+	 * - 用户开了省流量（navigator.connection.saveData），跳过；
+	 * - 用 requestIdleCallback 在空闲时执行、最长等 30s，避免抢占启动体验。
+	 */
+	private scheduleLocalEmbeddingWarmup(): void {
+		const s = this.settings;
+		if (s.embeddingSource !== "local") return;
+		if (!s.embeddingWarmupOnStartup) return;
+		const nav = navigator as Navigator & { connection?: { saveData?: boolean } };
+		const cores = nav.hardwareConcurrency ?? 0;
+		if (cores > 0 && cores < 4) return;
+		if (nav.connection?.saveData) return;
+		requestIdle(() => this.warmupLocalEmbedding(), 30000);
+	}
 
 	/**
 	 * 预热本地 embedding worker（对齐 vault-curate 的 warmup）：

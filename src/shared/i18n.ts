@@ -488,6 +488,10 @@ export const STRINGS = {
 		zh: "transformers.js 运行模型所需的 ONNX Runtime WASM 文件地址。留空则自动从官方 CDN 加载（需联网一次）。若你想完全离线运行，可把本仓库附带的 ort-wasm-simd-threaded.jsep.wasm 放到某个可访问路径并填其目录（末尾带 /）。绝大多数用户无需填写。",
 
 	},
+	"settings.embedding.warmupOnStartup": { zh: "启动时预热本地模型" },
+	"settings.embedding.warmupOnStartup.desc": {
+		zh: "开启后，进入 Obsidian 时会在浏览器空闲时段预加载本地向量模型，首次 AI 搜索/向量检索无需等待冷启动；代价是启动后约 3 秒会有一股明显卡顿（25MB WASM 编译 + 模型下载）。默认关闭：日常进入界面更顺滑，首次检索由懒加载自动覆盖。仅桌面端、且选了「本地」语义后端时生效。",
+	},
 	"settings.embedding.webgpu": { zh: "WebGPU 加速" },
 	"settings.embedding.webgpu.on": {
 		zh: "当前环境支持 WebGPU，本地向量搜索将走 GPU 加速（快）。",

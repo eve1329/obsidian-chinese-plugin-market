@@ -92,6 +92,10 @@ export interface ChinesePluginMarketSettings {
 	embeddingLocalWasmPaths: string;
 	/** HF 模型下载镜像源（空 = 官方 huggingface.co；国内可填 https://hf-mirror.com/） */
 	embeddingRemoteHost: string;
+	/** 启动时预热本地模型（默认 false）：开启后浏览器空闲时段预加载本地向量模型，
+	 * 使首次 AI 搜索/向量检索零冷启动；代价是启动后约 3 秒一股明显卡顿
+	 * （25MB WASM 编译 + 模型下载）。默认关闭可消除该卡顿；首次检索由懒热路径覆盖。 */
+	embeddingWarmupOnStartup: boolean;
 	// 数据源镜像（产品改进 #10）
 	mirrorSource: MirrorSource;
 	mirrorCustomBase: string;
@@ -199,6 +203,7 @@ export const DEFAULT_SETTINGS: ChinesePluginMarketSettings = {
 	embeddingLocalModel: "Xenova/multilingual-e5-small",
 	embeddingLocalWasmPaths: "",
 	embeddingRemoteHost: "", // 空 = 跟随默认镜像 hf-mirror.com（normalizeRemoteHost）；海外/自托管显式填 https://huggingface.co/ 等
+	embeddingWarmupOnStartup: false, // 默认不启动期预热，避免进入界面后约 3s 的卡顿
 	mirrorSource: "github", // 默认走 GitHub 原始源；不再自动探测/切换其它镜像
 	mirrorCustomBase: "",
 	selfHostedTranslators: [], // 默认无自托管翻译源，行为完全不变

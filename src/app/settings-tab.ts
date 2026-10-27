@@ -578,6 +578,12 @@ export class TranslatorSettingTab extends PluginSettingTab {
 								control: { type: "text", key: "embeddingLocalWasmPaths", placeholder: "/wasm/" },
 							},
 							{
+								name: this.t("settings.embedding.warmupOnStartup"),
+								desc: this.t("settings.embedding.warmupOnStartup.desc"),
+								visible: () => s.embeddingSource === "local",
+								control: { type: "toggle", key: "embeddingWarmupOnStartup" },
+							},
+							{
 								name: this.t("settings.embedding.webgpu"),
 								visible: () => s.embeddingSource === "local",
 								desc: isWebGPUAvailable()
