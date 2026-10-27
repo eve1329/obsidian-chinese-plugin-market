@@ -51,3 +51,6 @@ scripts/eval/eval.bundle.cjs
 
 # 依赖扫描生成的已处理旁路（增量续跑用，不入库）
 plugin-deps-processed.json
+
+# pnpm 内容可寻址存储（构建/安装期间生成，体积巨大且机器相关，绝不入库）
+.pnpm-store/
