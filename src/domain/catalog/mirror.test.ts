@@ -1,7 +1,29 @@
 import { describe, it, expect } from "vitest";
-import { resolveUrl, classifyNetworkError, type MirrorSource } from "@domain/catalog/mirror";
+import { buildRawFileUrl, resolveUrl, classifyNetworkError, type MirrorConfig, type MirrorSource } from "@domain/catalog/mirror";
+import { buildManifestUrl, buildMainJsUrl } from "@domain/compare/plugin-insight";
 
 const RAW = "https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/community-plugins.json";
+
+describe("仓库文件 URL 共用构造", () => {
+	it.each<MirrorConfig>([
+		{ source: "github" },
+		{ source: "jsdelivr" },
+		{ source: "ghproxy" },
+		{ source: "custom", customBase: "https://mirror.example.com/" },
+		{ source: "custom" },
+	])("manifest、入口文件与指定 ref 使用相同的镜像规则：%j", (mirror) => {
+		const base = "https://raw.githubusercontent.com/owner/repo";
+		expect(buildManifestUrl("/owner/repo/", mirror)).toBe(resolveUrl(`${base}/HEAD/manifest.json`, mirror));
+		expect(buildMainJsUrl("owner/repo", " dist/plugin.js ", mirror)).toBe(resolveUrl(`${base}/HEAD/dist/plugin.js`, mirror));
+		expect(buildMainJsUrl("owner/repo", "   ", mirror)).toBe(resolveUrl(`${base}/HEAD/main.js`, mirror));
+		expect(buildRawFileUrl("owner/repo", "styles.css", mirror, "v1.2.3")).toBe(resolveUrl(`${base}/v1.2.3/styles.css`, mirror));
+	});
+
+	it.each([undefined, "", "owner", "owner//repo", "owner/repo/extra", "///"])("非法仓库不生成下载 URL：%s", (repo) => {
+		expect(buildRawFileUrl(repo, "main.js", { source: "github" })).toBe("");
+		expect(buildManifestUrl(repo, { source: "github" })).toBe("");
+	});
+});
 
 describe("resolveUrl", () => {
 	it("github 源原样返回", () => {

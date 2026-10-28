@@ -3,6 +3,8 @@
  * 纯函数，零依赖，便于单元测试。
  */
 
+import { parseGithubRepo } from "@shared/github";
+
 /** 镜像源类型 */
 export type MirrorSource = "github" | "jsdelivr" | "ghproxy" | "custom";
 
@@ -45,6 +47,18 @@ export function resolveUrl(rawUrl: string, mirror: MirrorConfig): string {
 	}
 }
 
+/** 构造仓库文件的 raw URL 并应用镜像；ref 缺省为 HEAD，repo 非法时返回空串。 */
+export function buildRawFileUrl(
+	repo: string | undefined,
+	file: string,
+	mirror: MirrorConfig,
+	ref = "HEAD",
+): string {
+	const gh = parseGithubRepo(repo);
+	if (!gh) return "";
+	return resolveUrl(`https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${ref}/${file}`, mirror);
+}
+
 /**
  * 由插件 repo（形如 `owner/name`）构造 README 的 raw 拉取 URL，并按镜像映射（产品改进 #8）。
  * 默认取 `HEAD` 分支的 `README.md`；repo 非法（空 / 无斜杠）时返回空串。
@@ -55,13 +69,7 @@ export function buildReadmeUrl(
 	mirror: MirrorConfig,
 	fileName: string = "README.md"
 ): string {
-	if (!repo) return "";
-	const cleaned = repo.replace(/^\/+|\/+$/g, "");
-	const parts = cleaned.split("/");
-	if (parts.length !== 2 || !parts[0] || !parts[1]) return "";
-	const [owner, name] = parts;
-	const rawUrl = `https://raw.githubusercontent.com/${owner}/${name}/HEAD/${fileName}`;
-	return resolveUrl(rawUrl, mirror);
+	return buildRawFileUrl(repo, fileName, mirror);
 }
 
 /**

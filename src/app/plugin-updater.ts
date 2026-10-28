@@ -14,9 +14,10 @@
 import { type App, Platform, requestUrl, requireApiVersion } from "obsidian";
 import { asAppInternals } from "@data/platform/obsidian-internals";
 import { buildManifestUrl } from "@domain/compare/plugin-insight";
-import { resolveUrl, type MirrorConfig } from "@domain/catalog/mirror";
+import { buildRawFileUrl, type MirrorConfig } from "@domain/catalog/mirror";
 import { githubReleaseAssetUrls } from "@app/direct-install";
 import { makeT } from "@shared/i18n";
+import { parseGithubRepo } from "@shared/github";
 
 const t = makeT();
 
@@ -27,33 +28,6 @@ interface Manifest {
 	main?: string;
 	minAppVersion?: string;
 	name?: string;
-}
-
-/** 从 owner/name 字符串反解 */
-function parseRepo(repo: string): { owner: string; repo: string } | null {
-	const cleaned = repo.replace(/^\/+|\/+$/g, "");
-	const parts = cleaned.split("/");
-	if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
-	return { owner: parts[0], repo: parts[1] };
-}
-
-/** 构造任意文件的 raw 源码树 URL（经镜像），ref 缺省取 HEAD（最新） */
-function buildRawUrl(repo: string, file: string, mirror: MirrorConfig, ref = "HEAD"): string {
-	const gh = parseRepo(repo);
-	if (!gh) return "";
-	const rawUrl = `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${ref}/${file}`;
-	return resolveUrl(rawUrl, mirror);
-}
-
-/** 构造仓库内任意 ref（分支/tag）的 raw URL（经镜像） */
-function buildRawUrlAtRef(
-	gh: { owner: string; repo: string },
-	ref: string,
-	file: string,
-	mirror: MirrorConfig,
-): string {
-	const rawUrl = `https://raw.githubusercontent.com/${gh.owner}/${gh.repo}/${ref}/${file}`;
-	return resolveUrl(rawUrl, mirror);
 }
 
 /** 构造 Release 资产 URL（严格模式：只认指定 tag，不用 latest 兜底，保证版本精确） */
@@ -112,23 +86,12 @@ export async function fetchWithReleaseFallback(
 	mirror: MirrorConfig,
 	optional = false,
 ): Promise<string | null> {
-	const gh = parseRepo(repo);
+	const gh = parseGithubRepo(repo);
 	const urls: string[] = [];
-	const raw = buildRawUrl(repo, file, mirror);
+	const raw = buildRawFileUrl(repo, file, mirror);
 	if (raw) urls.push(raw);
 	if (gh) urls.push(...githubReleaseAssetUrls(gh, file, version || undefined));
-	let lastStatus = 0;
-	for (const url of urls) {
-		const r = await requestUrl({ url, throw: false });
-		if (r.status >= 200 && r.status < 300) return r.text;
-		// 500/403 等不继续试下一个来源，直接抛错（当成服务端问题）
-		if (r.status !== 404 && r.status !== 410) {
-			throw new Error(t("action.update.fetchFail", { file, code: String(r.status) }));
-		}
-		lastStatus = r.status;
-	}
-	if (optional) return null;
-	throw new Error(t("action.update.fetchFail", { file, code: String(lastStatus || 404) }));
+	return fetchFirstUrl(urls, file, optional);
 }
 
 /**
@@ -229,7 +192,7 @@ async function installPinnedVersion(
 	mirror: MirrorConfig,
 	version: string,
 ): Promise<Manifest> {
-	const gh = parseRepo(repo);
+	const gh = parseGithubRepo(repo);
 	if (!gh) throw new Error(t("action.update.noRepo"));
 	const refs = tagVariants(version);
 	if (refs.length === 0) throw new Error(t("action.update.noRepo"));
@@ -237,7 +200,7 @@ async function installPinnedVersion(
 	// 1) manifest：先定版本再决定入口文件名
 	const manUrls: string[] = [];
 	for (const ref of refs) {
-		manUrls.push(buildRawUrlAtRef(gh, ref, "manifest.json", mirror));
+		manUrls.push(buildRawFileUrl(repo, "manifest.json", mirror, ref));
 		manUrls.push(...strictReleaseAssetUrls(gh, "manifest.json", ref));
 	}
 	const manText = (await fetchFirstUrl(manUrls, "manifest.json", false)) as string;
@@ -249,9 +212,9 @@ async function installPinnedVersion(
 	const mainUrls: string[] = [];
 	const cssUrls: string[] = [];
 	for (const ref of refs) {
-		mainUrls.push(buildRawUrlAtRef(gh, ref, mainFile, mirror));
+		mainUrls.push(buildRawFileUrl(repo, mainFile, mirror, ref));
 		mainUrls.push(...strictReleaseAssetUrls(gh, mainFile, ref));
-		cssUrls.push(buildRawUrlAtRef(gh, ref, "styles.css", mirror));
+		cssUrls.push(buildRawFileUrl(repo, "styles.css", mirror, ref));
 		cssUrls.push(...strictReleaseAssetUrls(gh, "styles.css", ref));
 	}
 	const mainText = await fetchFirstUrl(mainUrls, mainFile, false);
