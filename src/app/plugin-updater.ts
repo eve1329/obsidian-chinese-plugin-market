@@ -6,7 +6,7 @@
  *   - repo（owner/name）经 buildManifestUrl / buildMainJsUrl 拼成 raw.githubusercontent
  *     源（与洞察/信号抓取同源，自动享受镜像容错）；
  *   - 下载 manifest.json / main.js / styles.css 三件套，覆盖写盘；
- *   - disable + enablePluginAndSave 让新代码生效（与 installFromUrl 一致）。
+ *   - disable + enablePluginAndSave 让新代码生效（与 installFromUrlResolved 一致）。
  *
  * 移动端限制：Obsidian 移动端禁止写入 plugins 目录，故直接拒绝并提示回原生设置面板。
  */
@@ -154,7 +154,7 @@ export async function updatePluginCore(
 
 	if (version && version.trim()) return installPinnedVersion(app, id, repo, mirror, version.trim());
 
-	// 1) 拉最新 manifest 原始文本（用 installFromUrl 同款校验，避免覆盖成装不上的版本）
+	// 1) 拉最新 manifest 原始文本（用 installFromUrlResolved 同款校验，避免覆盖成装不上的版本）
 	const manUrl = buildManifestUrl(repo, mirror);
 	if (!manUrl) throw new Error(t("action.update.noRepo"));
 	const manResp = await requestUrl({ url: manUrl, throw: false });

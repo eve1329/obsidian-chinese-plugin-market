@@ -134,18 +134,3 @@ export function classifyNetworkError(err: unknown): NetworkErrorInfo {
 	}
 	return { kind: "unknown", message: raw || "未知网络错误" };
 }
-
-/**
- * 计算镜像容错探测顺序：当前设置源排在最前，其余候选源按默认优先级补足。
- * 纯函数，便于单测；fetchPluginsWithFallback 依此顺序逐个探测。
- * @param current 用户当前设置的镜像源
- * @param candidates 候选源全集（默认 jsdelivr → github，ghproxy 已停服不参与默认顺序）
- * @returns 探测顺序（current 在前，其余按 candidates 原序过滤掉 current）
- */
-export function buildMirrorOrder(
-	current: MirrorSource,
-	candidates: MirrorSource[] = ["jsdelivr", "github"]
-): MirrorSource[] {
-	const rest = candidates.filter((m) => m !== current);
-	return [current, ...rest];
-}
